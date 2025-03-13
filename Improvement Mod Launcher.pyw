@@ -212,7 +212,7 @@ def download_update_thread(): # Download the new update as a separate thread
                     gApp.after(0, lambda: gUpdate_label.configure(text=progress_message))
         if not gCancelDownload: # If download completes successfully
             debug("download_update_thread", "Download complete")
-            gApp.after(0, lambda: gUpdate_label.configure(text="Download complete! Extracting..."))
+            gApp.after(0, lambda: gUpdate_label.configure(text="Download complete. Extracting..."))
         else: # If download was Cancelled
             debug("download_update_thread", "Download cancelled")
             gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
@@ -313,7 +313,7 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
             gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
         else:  # If the dates match, the mod is up-to-date
             debug("check_updates", "UpToDate") # Log that the mod is up-to-date
-            gUpdate_label.configure(text=f"Improvement Mod UpToDate - {update_date}") # Update the UI to indicate that the mod is up-to-date
+            gUpdate_label.configure(text=f"Improvement Mod Up-to-date - {update_date}") # Update the UI to indicate that the mod is up-to-date
             gUpdateButton_label.configure(text="Reinstall Mod")
 
     except requests.RequestException as e: # Catch network-related errors during the HTTP request
@@ -827,12 +827,12 @@ def interface():
         gD3D9Var_intVar = ctk.IntVar(value=0)
         gD3D9_checkbox = ctk.CTkCheckBox(gApp, text="Enable DirectX12 Wrapper", variable=gD3D9Var_intVar, command=checkbox_D3D9_state,hover_color="#800000",fg_color="#600000",font= gMain_font,bg_color="#2f1308")
         gInterface_canvas.create_window(20, 320, window=gD3D9_checkbox,anchor="w")
-        CreateToolTip(gD3D9_checkbox, "Enable DirectX12 Wrapper, when disabled the game will use DirectX9")
+        CreateToolTip(gD3D9_checkbox, "Enable the DirectX12 wrapper; when disabled the game will use DirectX9")
     else:
         gD3D9_checkbox = ctk.CTkCheckBox(gApp, text="Enable DirectX12 Wrapper", variable=gD3D9Var_intVar, command=checkbox_D3D9_state,hover_color="#800000",fg_color="#600000",font= gMain_font,bg_color="#2f1308")
         gD3D9_checkbox.configure(state="disabled")
         gInterface_canvas.create_window(20, 320, window=gD3D9_checkbox,anchor="w")
-        CreateToolTip(gD3D9_checkbox, "Enable DirectX12 Wrapper, when disabled the game will use DirectX9")
+        CreateToolTip(gD3D9_checkbox, "Enable the DirectX12 wrapper; when disabled the game will use DirectX9")
 
 
     gFolderPath_label = ctk.CTkLabel(gApp, text=str(truncate_string(gGamePath, max_length=180, placeholder="...")),font= gMain_font,fg_color="#2f1308",wraplength=800,anchor="w",justify='left')
