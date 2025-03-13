@@ -11,7 +11,7 @@ Take charge. Customize your empire. Conquer with confidence. The Age of Empires 
 **How to use**<br />
 Install age of empires 3 (asian dynasties or gold edition), if you already have the game installed but want to keep a separate install, copy the game folder and rename it to Age of Empires III Improvement Mod.<br />
 Run age3y.exe once then exit. <br />
-Download the zip from [Releases](https://github.com/ageekhere/Improvement-Mod-Launcher/releases) , unzip the exe into same directory as age3y.exe  NOTE: Currently not release yet<br />
+Download the zip from [Releases](https://github.com/ageekhere/Improvement-Mod-Launcher/releases) , unzip the exe into same directory as age3y.exe <br />
 Note: The Launcher is built with python and uses autopytoexe, if your antivirus detects it as a virus it is a false positive and can be [excluded](https://nitratine.net/blog/post/issues-when-using-auto-py-to-exe/#my-antivirus-detected-the-exe-as-a-virus) <br />
 
 **How to compile for development**<br />
