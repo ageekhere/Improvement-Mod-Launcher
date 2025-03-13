@@ -313,7 +313,7 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
             gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
         else:  # If the dates match, the mod is up-to-date
             debug("check_updates", "UpToDate") # Log that the mod is up-to-date
-            gUpdate_label.configure(text=f"Improvement Mod UpToDate - {gLast_updated}") # Update the UI to indicate that the mod is up-to-date
+            gUpdate_label.configure(text=f"Improvement Mod UpToDate - {update_date}") # Update the UI to indicate that the mod is up-to-date
             gUpdateButton_label.configure(text="Reinstall Mod")
 
     except requests.RequestException as e: # Catch network-related errors during the HTTP request
