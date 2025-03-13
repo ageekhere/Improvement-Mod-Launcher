@@ -212,7 +212,7 @@ def download_update_thread(): # Download the new update as a separate thread
                     gApp.after(0, lambda: gUpdate_label.configure(text=progress_message))
         if not gCancelDownload: # If download completes successfully
             debug("download_update_thread", "Download complete")
-            gApp.after(0, lambda: gUpdate_label.configure(text="Download complete"))
+            gApp.after(0, lambda: gUpdate_label.configure(text="Download complete! Extracting..."))
         else: # If download was Cancelled
             debug("download_update_thread", "Download cancelled")
             gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
@@ -290,6 +290,7 @@ def download_update_thread(): # Download the new update as a separate thread
 def download_update() -> None:
     global gDownloadThread
     debug("download_update", "Download update")
+    gApp.after(0, lambda: gUpdate_label.configure(text="Starting download..."))
     disable_all_widgets()
     create_button("gDownloadCancel_button", "gDownloadCancel_label", "Cancel Download", 20, 40,"Cancel Download", download_update_cancel)
     gDownloadThread = Thread(target=download_update_thread, daemon=True)
@@ -299,31 +300,26 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
     global gLast_updated # Global variable to store the 'Last-Modified' header of the latest update
     global gUpdateMod_button # Global variable to reference the update button in the UI
     debug("check_updates", "checking for updates") # Log the start of the update check
+
     try: # Send a HEAD request to the URL to get metadata, but not the content
         response = requests.head(url, allow_redirects=True)
         response.raise_for_status() # Raise an exception if the request fails (non-2xx status code)
-        gLast_updated = response.headers.get("Last-Modified", "No Last-Modified header found") # Get the 'Last-Modified' header from the response or provide a default message if it's not found    
+        gLast_updated = response.headers.get("ETag", "No Last-Modified header found") # Get the 'Last-Modified' header from the response or provide a default message if it's not found    
+        update_date = response.headers.get("Last-Modified", "No Last-Modified header found")
         debug("check_updates Last updated date", gLast_updated) # Log the 'Last-Modified' header
         if gConfigUserInfo["lastupdate"] != gLast_updated: # Compare the stored 'Last-Modified' date with the value received in the response
             debug("check_updates", f"{gConfigUserInfo['lastupdate']} != {gLast_updated}") # Log the mismatch between the stored and received date
-            gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(gLast_updated, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
+            gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(update_date, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
             gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
         else:  # If the dates match, the mod is up-to-date
             debug("check_updates", "UpToDate") # Log that the mod is up-to-date
             gUpdate_label.configure(text=f"Improvement Mod UpToDate - {gLast_updated}") # Update the UI to indicate that the mod is up-to-date
-            gUpdateMod_button.unbind("<Button-1>") # Disable the update button click event (no update available)
-            gUpdateButton_label.unbind("<Button-1>") # Disable the update info button click event
-            # Change the button label to indicate no update is available
-            gUpdateButton_label.configure(text_color="gray")
-            gUpdateButton_label.configure(text="No Update")
-            gUpdateButton_label.configure(cursor="") # Remove the cursor change on hover (no action)
+            gUpdateButton_label.configure(text="Reinstall Mod")
 
     except requests.RequestException as e: # Catch network-related errors during the HTTP request
         debug("check_updates Error retrieving last modified date:", str(e)) # Log the error message
         add_log("Cannot check for updates") # Add the error message to the log
-        gUpdateButton_label.configure(text_color="gray")
-        gUpdateButton_label.configure(text="No Update")
-        gUpdateButton_label.configure(cursor="") # Remove the cursor change on hover (no action)
+        gUpdateButton_label.configure(text="Reinstall Mod")
         return "" # Return an empty string to indicate an error has occurred
     
 def startGame_button_click() -> None:
