@@ -1,0 +1,93 @@
+{
+ "version": "auto-py-to-exe-configuration_v1",
+ "pyinstallerOptions": [
+  {
+   "optionDest": "noconfirm",
+   "value": true
+  },
+  {
+   "optionDest": "filenames",
+   "value": "c:/Improvement-Mod-Launcher/Improvement Mod Launcher.pyw"
+  },
+  {
+   "optionDest": "onefile",
+   "value": true
+  },
+  {
+   "optionDest": "console",
+   "value": false
+  },
+  {
+   "optionDest": "icon_file",
+   "value": "c:/Improvement-Mod-Launcher/icon/icon.ico"
+  },
+  {
+   "optionDest": "name",
+   "value": "Improvement Mod Launcher"
+  },
+  {
+   "optionDest": "upx_dir",
+   "value": "c:/upx-5.0.0-win64"
+  },
+  {
+   "optionDest": "clean_build",
+   "value": true
+  },
+  {
+   "optionDest": "splash",
+   "value": "c:/Improvement-Mod-Launcher/splashScreen/splash.jpg"
+  },
+  {
+   "optionDest": "optimize",
+   "value": "2"
+  },
+  {
+   "optionDest": "strip",
+   "value": false
+  },
+  {
+   "optionDest": "noupx",
+   "value": false
+  },
+  {
+   "optionDest": "disable_windowed_traceback",
+   "value": false
+  },
+  {
+   "optionDest": "version_file",
+   "value": "c:/Improvement-Mod-Launcher/version/version_info.txt"
+  },
+  {
+   "optionDest": "uac_admin",
+   "value": true
+  },
+  {
+   "optionDest": "uac_uiaccess",
+   "value": false
+  },
+  {
+   "optionDest": "argv_emulation",
+   "value": false
+  },
+  {
+   "optionDest": "bootloader_ignore_signals",
+   "value": false
+  },
+  {
+   "optionDest": "datas",
+   "value": "c:/Improvement-Mod-Launcher/interface/background.jpg;."
+  },
+  {
+   "optionDest": "datas",
+   "value": "c:/Improvement-Mod-Launcher/interface/button.png;."
+  },
+  {
+   "optionDest": "datas",
+   "value": "c:/Improvement-Mod-Launcher/interface/icon.ico;."
+  }
+ ],
+ "nonPyinstallerOptions": {
+  "increaseRecursionLimit": true,
+  "manualArguments": ""
+ }
+}
