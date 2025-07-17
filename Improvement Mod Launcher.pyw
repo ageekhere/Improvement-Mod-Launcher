@@ -22,6 +22,7 @@ import sys
 from datetime import date
 import webbrowser
 import ctypes.wintypes
+import cloudscraper
 
 def debug(message:str, log:str) -> None: # Needs string message and string log message, does not return anything
     if gDebugger: # Display logs when enabled
@@ -189,7 +190,9 @@ def download_update_thread(): # Download the new update as a separate thread
         if os.path.exists(zip_path):
             debug("download_update_thread", "Removing mod_file.zip")
             os.remove(zip_path)
-        with requests.get(gModDownloadUrl, stream=True) as response:
+
+        scraper = cloudscraper.create_scraper(interpreter="nodejs", delay=5) # Create a Cloudscraper session that solves Cloudflare
+        with scraper.get(gModDownloadUrl, stream=True, timeout=60) as response:
             response.raise_for_status() # Raise an error if the request fails
             total_size = int(response.headers.get("Content-Length", 0)) # Get file size
             block_size = 1024 # Define block size for downloading (1 KB)
@@ -300,13 +303,22 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
     global gLast_updated # Global variable to store the 'Last-Modified' header of the latest update
     global gUpdateMod_button # Global variable to reference the update button in the UI
     debug("check_updates", "checking for updates") # Log the start of the update check
-
     try: # Send a HEAD request to the URL to get metadata, but not the content
-        response = requests.head(url, allow_redirects=True)
-        response.raise_for_status() # Raise an exception if the request fails (non-2xx status code)
-        gLast_updated = response.headers.get("ETag", "No Last-Modified header found") # Get the 'Last-Modified' header from the response or provide a default message if it's not found    
-        update_date = response.headers.get("Last-Modified", "No Last-Modified header found")
-        debug("check_updates Last updated date", gLast_updated) # Log the 'Last-Modified' header
+        scraper = cloudscraper.create_scraper(interpreter="nodejs", delay=5)
+        headers = {
+            "Referer": "https://www.moddb.com/mods/improvement-mod/downloads/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        # Use stream=True to avoid downloading the whole file
+        response = scraper.get(url, headers=headers, stream=True, allow_redirects=True)
+        
+        if response.ok:
+            gLast_updated = response.headers.get("Last-Modified", "Not found")    
+            update_date = gLast_updated
+            debug("check_updates Last updated date", gLast_updated) # Log the 'Last-Modified' header
+        else:
+            add_log("Update response not OK")
+        
         if gConfigUserInfo["lastupdate"] != gLast_updated: # Compare the stored 'Last-Modified' date with the value received in the response
             debug("check_updates", f"{gConfigUserInfo['lastupdate']} != {gLast_updated}") # Log the mismatch between the stored and received date
             gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(update_date, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
@@ -321,7 +333,7 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
         add_log("Cannot check for updates") # Add the error message to the log
         gUpdateButton_label.configure(text="Reinstall Mod")
         return "" # Return an empty string to indicate an error has occurred
-    
+
 def startGame_button_click() -> None:
     global gThreadStop_event
     debug("startGame_button_click","Starting game")
@@ -641,38 +653,34 @@ def is_msxml4_installed() -> bool:
             continue  
     return False
 
-def find_download_mirror() -> None: # Find the download link from moddb
+def find_download_mirror() -> None:
     global gModDownloadUrl
-    start_url = "https://www.moddb.com/downloads/start/286602?referer=https%3A%2F%2Fwww.moddb.com%2Fmods%2Fimprovement-mod%2Fdownloads" # Find the download page from moddb
-    headers = { # Headers to mimic a real browser to get the mirror link
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    url = "https://www.moddb.com/downloads/start/286602?referer=https%3A%2F%2Fwww.moddb.com%2Fmods%2Fimprovement-mod%2Fdownloads%2F"
+    headers = {
         "Referer": "https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new"
     }
-    # Fetch the HTML content
-    session = requests.Session()
+
+    scraper = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "mobile": False},
+        interpreter="js2py",
+        delay=5,      # allow JS challenge time
+        debug=True    # log details if challenge fails
+    )
+
     try:
-        response = session.get(start_url, headers=headers, timeout=5)
-    except requests.exceptions.ConnectionError:
-        add_log("No internet connection available")
-        return
-    except requests.exceptions.Timeout:
-        add_log("Update check failed")
-        return
-    except requests.exceptions.RequestException as e:
-        print(f"An error has occurred: {e}")
-        add_log("Update check failed")
+        response = scraper.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+    except Exception as e:
+        add_log(f"Failed to fetch: {e}")
         return
 
-    soup = BeautifulSoup(response.text, "html.parser") # Parse the HTML using BeautifulSoup
-    # Look for the mirror link inside the page
-    mirror_link = None
-    for a in soup.find_all("a", href=True):
-        if "/downloads/mirror/" in a["href"]:
-            mirror_link = "https://www.moddb.com" + a["href"]
-            break
-    if mirror_link:
-        gModDownloadUrl = mirror_link
-        debug("find_download_mirror Mirror Link Found:",mirror_link)
+    soup = BeautifulSoup(response.text, "html.parser")
+    mirror = next((a["href"] for a in soup.find_all("a", href=True)
+                   if "/downloads/mirror/" in a["href"]), None)
+
+    if mirror:
+        gModDownloadUrl = "https://www.moddb.com" + mirror
+        debug("Mirror Link Found:", gModDownloadUrl)
     else:
         add_log("Mirror Link not Found")
 
@@ -1051,8 +1059,8 @@ if __name__ == '__main__':
     else: # Running as a script 
         gApp.iconbitmap(r"icon\icon.ico") # Set the path to the icon file for script
 
-    gVersion:str = "1.00" # App version
-    gGitHubVersion:str = "version1.00"
+    gVersion:str = "1.01" # App version
+    gGitHubVersion:str = "version1.01"
 
     gModDownloadUrl:str = "" # Hold the URL for the mirror download
     gLast_updated:str = "" # Stores the last date the file was installed
@@ -1099,4 +1107,5 @@ if __name__ == '__main__':
     gLog_font:ctk.CTkFont = None
     gAi_font:ctk.CTkFont = None
     gLogTextBox:ctk.CTkTextbox = None
+
     main()
