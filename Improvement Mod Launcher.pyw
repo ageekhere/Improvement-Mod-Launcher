@@ -48,6 +48,7 @@ def is_admin() -> bool: # Checks if the Launcher is running as admin
         return bool(windll.shell32.IsUserAnAdmin()) # Checks if app is running as admin
     except Exception as e:
         debug("is_admin","Checking failed" + str(e))
+        add_log("Cannot check if running as Admin" + str(e))
         return False
 
 def find_label_by_name(widget) -> bool: # Finds a widget in gInterface_canvas
@@ -136,6 +137,7 @@ def read_write_config(fileAction:str) -> None: # r or w values only
             debug("read_write_config", f"Successfully read from {gConfigPath}")
     except (FileNotFoundError, PermissionError, IOError,Exception) as e: # Handle file access errors and give error logs
         debug("read_write_config", f"Cannot access {gConfigPath}: {e}")
+        add_log("Error accessing config " + str(e))
 
 def is_process_running(process_name:str) -> bool: # Check if a process with the given name is running
     for proc in process_iter(['name']):
@@ -232,12 +234,17 @@ def download_update_thread(): # Download the new update as a separate thread
             with ZipFile(zip_path, "r") as zip_ref: # Open the downloaded ZIP file
                 members = zip_ref.infolist()
                 total_files = len(members) # Get the total number of files to extract
+                current_exe = os.path.basename(sys.argv[0]).lower()
                 for index, member in enumerate(members, start=1):
                     if gCancelDownload: # Check if user Cancelled extraction
                         debug("Extraction cancelled:", "")
                         gApp.after(0, lambda: gUpdate_label.configure(text="Extraction cancelled"))
                         enable_all_widgets()
                         return
+
+                    if os.path.basename(member.filename).lower() == current_exe:
+                        continue
+
                     target_path = os.path.join(gGamePath, member.filename) # Define extraction path
                     if member.filename.endswith("/"): # Create directories if needed
                         os.makedirs(target_path, exist_ok=True)
@@ -268,7 +275,7 @@ def download_update_thread(): # Download the new update as a separate thread
         except Exception as e: # Handle extraction errors
             gApp.after(0, lambda: gUpdate_label.configure(text="Extraction error"))
             debug("download_update_thread", "Unzip error Extraction error:" + str(e))
-            add_log("Cannot unzip update, update failed")
+            add_log("Cannot unzip update, update failed " + str(e))
             gThreadStop_event.set()
 
     try: # Delete the ZIP file after extraction
@@ -286,7 +293,7 @@ def download_update_thread(): # Download the new update as a separate thread
         install_check()
     except Exception as e: # Handle errors while deleting ZIP file
         debug("download_update_thread", "Error deleting zip file:" + str(e))
-        add_log("Error deleting temporary update zip file")
+        add_log("Error deleting temporary update zip file " + str(e))
         gThreadStop_event.set()
     enable_all_widgets()
 
@@ -330,7 +337,7 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
 
     except requests.RequestException as e: # Catch network-related errors during the HTTP request
         debug("check_updates Error retrieving last modified date:", str(e)) # Log the error message
-        add_log("Cannot check for updates") # Add the error message to the log
+        add_log("Cannot check for updates " + str(e)) # Add the error message to the log
         gUpdateButton_label.configure(text="Reinstall Mod")
         return "" # Return an empty string to indicate an error has occurred
 
@@ -362,6 +369,7 @@ def get_zip_top_level_folder_names(zip_file_path) -> set:
                         folder_names.add(folder_name)
     except Exception as e:
         debug("get_zip_top_level_folder_names Error reading " + str(zip_file_path) , str(e))
+        add_log("Error during upzip phase" + str(e))
     return sorted(folder_names)
 
 def update_file(file_text:str,file_path:str) -> None:
@@ -374,10 +382,10 @@ def update_file(file_text:str,file_path:str) -> None:
         add_log("Cannot update ImpMod_AISetting")
     except OSError as e: # OSError
         debug(f"update_file OS error has occurred: {e}", "OSError when writing to ImpMod_AISetting")
-        add_log("Cannot update ImpMod_AISetting")
+        add_log("Cannot update ImpMod_AISetting " + str(e))
     except Exception as e: # Exception
         debug(f"update_file An unexpected error has occurred: {e}", "Exception when writing to ImpMod_AISetting")
-        add_log("Cannot update ImpMod_AISetting")
+        add_log("Cannot update ImpMod_AISetting " + str(e))
 
 def extract_ai_from_zip(folder_name: str) -> None:
     """
@@ -404,13 +412,13 @@ def extract_ai_from_zip(folder_name: str) -> None:
         debug("extract_ai_from_zip", f"Extraction complete. Files extracted to {output_dir}")
     except PermissionError as e: # Handle permission error.
         debug("extract_ai_from_zip", f"Permission denied while extracting ImpMod_AIs: {e}")
-        add_log("Cannot change AI")
+        add_log("Cannot change AI " + str(e))
     except OSError as e: # Handle OS-related errors.
         debug("extract_ai_from_zip", f"OS error has occurred during extraction of ImpMod_AIs: {e}")
-        add_log("Cannot change AI")
+        add_log("Cannot change AI " + str(e))
     except Exception as e: # Catch any other unexpected errors.
         debug("extract_ai_from_zip", f"An unexpected error has occurred of ImpMod_AIs: {e}")
-        add_log("Cannot change AI")
+        add_log("Cannot change AI " + str(e))
 
 def option_changed(choice) -> None:
     global gAi_label
@@ -448,7 +456,8 @@ def read_ai_zip() -> None:
         button_image_path = gButtonImageUrl
     try:
         button_image = Image.open(button_image_path)
-    except FileNotFoundError:
+    except FileNotFoundError as e:
+        add_log("Cannot read AI file " + str(e))
         sys.exit(1)
     dropButton = ctk.CTkLabel(gApp, image=ctk.CTkImage(light_image=button_image, size=(250, 40)), text="", font=gMain_font) # Create the CTkLabel with the background image
     gInterface_canvas.create_window(20, 180, window=dropButton, anchor="w") # Add the label to the canvas
@@ -501,10 +510,10 @@ def read_ai_zip() -> None:
         add_log("Cannot load AI list")
     except OSError as e: # OSError
         debug(f"read_ai_zip OS error has occurred: {e}", "OSError when reading ImpMod_AIs")
-        add_log("Cannot load AI list")
+        add_log("Cannot load AI list " + str(e))
     except Exception as e: # Exception
         debug(f"read_ai_zip An unexpected error has occurred: {e}", "Exception when reading ImpMod_AIs")
-        add_log("Cannot load AI list")  
+        add_log("Cannot load AI list " + str(e))  
 
 def checkbox_D3D9_state() -> None:
     if gD3D9Var_intVar.get() == 0:
@@ -829,7 +838,7 @@ def interface():
         gD3D9Var_intVar = ctk.IntVar(value=1)
         gD3D9_checkbox = ctk.CTkCheckBox(gApp, text="Enable DirectX12 Wrapper", variable=gD3D9Var_intVar, command=checkbox_D3D9_state,hover_color="#800000",fg_color="#600000",font= gMain_font,bg_color="#2f1308")
         gInterface_canvas.create_window(20, 320, window=gD3D9_checkbox,anchor="w")
-        CreateToolTip(gD3D9_checkbox, "Enable the DirectX12 wrapper; when disabled the game will use DirectX9")
+        CreateToolTip(gD3D9_checkbox, "When disabled the game will use DirectX9 ; Do not enable the DX12 Wrapper if you are on a laptop or with integrated graphics; only enable if you have a mid to high range GPU")
         
     elif os.path.exists("D3D9.dll_Disabled"):
         gD3D9Var_intVar = ctk.IntVar(value=0)
@@ -1059,8 +1068,8 @@ if __name__ == '__main__':
     else: # Running as a script 
         gApp.iconbitmap(r"icon\icon.ico") # Set the path to the icon file for script
 
-    gVersion:str = "1.01" # App version
-    gGitHubVersion:str = "version1.01"
+    gVersion:str = "1.02" # App version
+    gGitHubVersion:str = "version1.02"
 
     gModDownloadUrl:str = "" # Hold the URL for the mirror download
     gLast_updated:str = "" # Stores the last date the file was installed
