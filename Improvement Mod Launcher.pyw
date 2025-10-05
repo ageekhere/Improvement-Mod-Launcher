@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from PIL import Image, ImageTk
 from psutil import process_iter
-import requests
+import requests, urllib.parse
 from shutil import copyfileobj, rmtree
 from subprocess import run, CalledProcessError, STARTUPINFO, STARTF_USESHOWWINDOW
 from tempfile import mkdtemp
@@ -23,6 +23,8 @@ from datetime import date
 import webbrowser
 import ctypes.wintypes
 import cloudscraper
+from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 def debug(message:str, log:str) -> None: # Needs string message and string log message, does not return anything
     if gDebugger: # Display logs when enabled
@@ -177,6 +179,7 @@ def download_update_thread(): # Download the new update as a separate thread
     global gStartGame_button
     global gStartGameButton_label
     global gAiDropDown
+    global gUpdateSize
     process_names = ["age3m.exe", "age3x.exe", "age3.exe", "age3y.exe"]
     for process_name in process_names:
         if is_process_running(process_name):
@@ -289,7 +292,7 @@ def download_update_thread(): # Download the new update as a separate thread
         else: # If download was Cancelled, show the update button again
             enable_all_widgets()
         gThreadStop_event.set()
-        check_updates(gModDownloadUrl) # Check for future updates
+        check_updates("https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new") # Check for future updates
         install_check()
     except Exception as e: # Handle errors while deleting ZIP file
         debug("download_update_thread", "Error deleting zip file:" + str(e))
@@ -306,33 +309,36 @@ def download_update() -> None:
     gDownloadThread = Thread(target=download_update_thread, daemon=True)
     gApp.after(1, gDownloadThread.start())
 
+
 def check_updates(url: str) -> str: # Function to check for mod updates by comparing the 'Last-Modified' header from the server
     global gLast_updated # Global variable to store the 'Last-Modified' header of the latest update
     global gUpdateMod_button # Global variable to reference the update button in the UI
+    global gUpdateSize # Stores the size of the zip
+    
     debug("check_updates", "checking for updates") # Log the start of the update check
     try: # Send a HEAD request to the URL to get metadata, but not the content
-        scraper = cloudscraper.create_scraper(interpreter="nodejs", delay=5)
-        headers = {
-            "Referer": "https://www.moddb.com/mods/improvement-mod/downloads/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-        # Use stream=True to avoid downloading the whole file
-        response = scraper.get(url, headers=headers, stream=True, allow_redirects=True)
-        
-        if response.ok:
-            gLast_updated = response.headers.get("Last-Modified", "Not found")    
-            update_date = gLast_updated
-            debug("check_updates Last updated date", gLast_updated) # Log the 'Last-Modified' header
-        else:
-            add_log("Update response not OK")
-        
-        if gConfigUserInfo["lastupdate"] != gLast_updated: # Compare the stored 'Last-Modified' date with the value received in the response
+
+        # Use a proxy that fetches the HTML for us
+        proxy_url = "https://api.allorigins.win/get?url=" + urllib.parse.quote(url, safe="")
+        response = requests.get(proxy_url, timeout=15)
+        response.raise_for_status()
+        html = response.json()["contents"]
+
+        soup = BeautifulSoup(html, "html.parser")
+        updated_tag = soup.find("h5", string="Updated")
+        if updated_tag:
+            time_tag = updated_tag.find_next("time")
+            if time_tag:
+                gLast_updated = time_tag.text.strip()
+
+        debug("check_updates - webcheck update",gLast_updated)
+        if gLast_updated != gConfigUserInfo["lastupdate"] :
             debug("check_updates", f"{gConfigUserInfo['lastupdate']} != {gLast_updated}") # Log the mismatch between the stored and received date
-            gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(update_date, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
+            gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(gLast_updated, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
             gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
         else:  # If the dates match, the mod is up-to-date
             debug("check_updates", "UpToDate") # Log that the mod is up-to-date
-            gUpdate_label.configure(text=f"Improvement Mod Up-to-date - {update_date}") # Update the UI to indicate that the mod is up-to-date
+            gUpdate_label.configure(text=f"Improvement Mod Up-to-date - {gLast_updated}") # Update the UI to indicate that the mod is up-to-date
             gUpdateButton_label.configure(text="Reinstall Mod")
 
     except requests.RequestException as e: # Catch network-related errors during the HTTP request
@@ -340,6 +346,7 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
         add_log("Cannot check for updates " + str(e)) # Add the error message to the log
         gUpdateButton_label.configure(text="Reinstall Mod")
         return "" # Return an empty string to indicate an error has occurred
+
 
 def startGame_button_click() -> None:
     global gThreadStop_event
@@ -693,37 +700,59 @@ def find_download_mirror() -> None:
     else:
         add_log("Mirror Link not Found")
 
-def make_config() -> None: # Make a user config file to save preferences 
+def make_config() -> None:  # Make a user config file to save preferences
     debug("make_config Creating", "config")
     global gConfigPath
     global gConfigUserData
     global gConfigUserInfo
     global gGamePath
-    gConfigUserData = ConfigParser() 
-    gConfigPath = Path("ImprovementModLauncher.ini") # Relative path to INI file
+
+    gConfigUserData = ConfigParser()
+    gConfigPath = Path("ImprovementModLauncher.ini")
+
+    # Define defaults
+    defaults = {
+        "gamepath": str(os.getcwd()),
+        "lastupdate": "na",
+        "showlogs": "0",
+        "updatelastcheck": ""
+    }
+
     try:
-        if gConfigPath.is_file(): # Check if the INI file exists
-            read_write_config("r") # Read the config file
-        else: # Set the defaults of the INI file if the file does not exists and create it
-            gConfigUserData["USERINFO"] = {
-            "gamepath": str(os.getcwd()),
-            "lastupdate": "na",
-            "showlogs": "0",
-            "updatelastcheck": ""
-            }
-        read_write_config("w") # Wright to the config
-        read_write_config("r") # Read the new config
-        gConfigUserInfo = gConfigUserData["USERINFO"] # Store the INI settings information
-        gGamePath = gConfigUserInfo["gamepath"] # Get the saved game path dir
+        if gConfigPath.is_file():
+            # Read existing config
+            read_write_config("r")
+        else:
+            # Create section if file doesn’t exist
+            gConfigUserData["USERINFO"] = {}
+
+        # Ensure section exists
+        if "USERINFO" not in gConfigUserData:
+            gConfigUserData["USERINFO"] = {}
+
+        # Fill in any missing keys with defaults
+        for key, value in defaults.items():
+            if key not in gConfigUserData["USERINFO"]:
+                gConfigUserData["USERINFO"][key] = value
+
+        # Save changes
+        read_write_config("w")
+        read_write_config("r")
+
+        gConfigUserInfo = gConfigUserData["USERINFO"]
+        gGamePath = gConfigUserInfo.get("gamepath", str(os.getcwd()))
         if gGamePath == "":
             gGamePath = str(os.getcwd())
+
         debug("make_config Config created ", "successfully")
-    except PermissionError: # File Permission Error
+
+    except PermissionError:  # File Permission Error
         debug("make_config Permission denied", "PermissionError")
-    except OSError as e: # OSError
+    except OSError as e:  # OSError
         debug(f"make_config OS error has occurred: {e}", "OSError")
-    except Exception as e: # Exception
+    except Exception as e:  # Exception
         debug(f"make_config An unexpected error has occurred: {e}", "Exception")
+
 
 def select_folder() -> None:
     global gGamePath
@@ -1005,7 +1034,7 @@ def main():
     make_config()
     interface()
     find_download_mirror() 
-    check_updates(gModDownloadUrl)
+    check_updates("https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new")
     read_ai_zip()
     install_check()
 
@@ -1068,8 +1097,8 @@ if __name__ == '__main__':
     else: # Running as a script 
         gApp.iconbitmap(r"icon\icon.ico") # Set the path to the icon file for script
 
-    gVersion:str = "1.02" # App version
-    gGitHubVersion:str = "version1.02"
+    gVersion:str = "1.03" # App version
+    gGitHubVersion:str = "version1.03"
 
     gModDownloadUrl:str = "" # Hold the URL for the mirror download
     gLast_updated:str = "" # Stores the last date the file was installed
@@ -1116,5 +1145,6 @@ if __name__ == '__main__':
     gLog_font:ctk.CTkFont = None
     gAi_font:ctk.CTkFont = None
     gLogTextBox:ctk.CTkTextbox = None
+    gUpdateSize = None
 
     main()
