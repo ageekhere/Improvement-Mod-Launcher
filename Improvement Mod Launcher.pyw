@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageTk
 from psutil import process_iter
 import requests, urllib.parse
-from shutil import copyfileobj, rmtree
+import shutil
 from subprocess import run, CalledProcessError, STARTUPINFO, STARTF_USESHOWWINDOW
 from tempfile import mkdtemp
 from threading import Thread,Event
@@ -25,6 +25,11 @@ import ctypes.wintypes
 import cloudscraper
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
+
+import requests
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 def debug(message:str, log:str) -> None: # Needs string message and string log message, does not return anything
     if gDebugger: # Display logs when enabled
@@ -141,6 +146,7 @@ def read_write_config(fileAction:str) -> None: # r or w values only
         debug("read_write_config", f"Cannot access {gConfigPath}: {e}")
         add_log("Error accessing config " + str(e))
 
+"""
 def is_process_running(process_name:str) -> bool: # Check if a process with the given name is running
     for proc in process_iter(['name']):
         if proc.info['name'] == process_name:
@@ -148,10 +154,13 @@ def is_process_running(process_name:str) -> bool: # Check if a process with the 
             return True
     debug("is_process_running","Did not find process " + str(process_name))
     return False
-
+"""
 def download_update_cancel() -> None: # Cancel the download
     global gCancelDownload
     gCancelDownload = True
+    if EXECUTOR:
+        EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
     debug("download_update_cancel", "Download cancelled by user")
 
 def enable_all_widgets() -> None: # Enables widgets
@@ -169,7 +178,7 @@ def disable_all_widgets() -> None: # Disable widgets
             widget.configure(state="disabled") # Set widget to disabled
         if isinstance(widget, ctk.CTkLabel) and widget.cget("text_color") == "white": # Check if the widget is a Label
             widget.configure(text_color="#636363") # Change the text color to gray
-
+"""
 def download_update_thread(): # Download the new update as a separate thread
     debug("download_update_thread", "Download update as a new thread")
     # Global variables used in the function
@@ -299,8 +308,19 @@ def download_update_thread(): # Download the new update as a separate thread
         add_log("Error deleting temporary update zip file " + str(e))
         gThreadStop_event.set()
     enable_all_widgets()
-
+"""
 def download_update() -> None:
+    # Multi-threaded download + copy
+    check_updates("")
+    if gNewUpdates == False:
+        return
+    create_button("gDownloadCancel_button", "gDownloadCancel_label", "Cancel Download", 20, 40,"Cancel Download", download_update_cancel)
+    global gCancelDownload
+    gCancelDownload = False
+    gApp.after(0, lambda: gUpdate_label.configure(text= "Preparing Download Please Wait"))
+    threading.Thread(target=download_update_process, daemon=True).start()
+
+    """
     global gDownloadThread
     debug("download_update", "Download update")
     gApp.after(0, lambda: gUpdate_label.configure(text="Starting download..."))
@@ -308,12 +328,93 @@ def download_update() -> None:
     create_button("gDownloadCancel_button", "gDownloadCancel_label", "Cancel Download", 20, 40,"Cancel Download", download_update_cancel)
     gDownloadThread = Thread(target=download_update_thread, daemon=True)
     gApp.after(1, gDownloadThread.start())
+    """
+def download_update_process():
+    global EXECUTOR
 
+    gThreadStop_event.clear()  # reset stop flag
+
+    EXECUTOR = ThreadPoolExecutor(max_workers=MAX_THREADS)
+
+    futures = []
+
+    try:
+        # Submit tasks
+        for f in to_download:
+            if gThreadStop_event.is_set():
+                break
+            futures.append(EXECUTOR.submit(download_and_copy, f[0]))
+
+        # Wait for completion
+        for future in futures:
+            if gThreadStop_event.is_set():
+                break
+            future.result()
+
+    finally:
+        if EXECUTOR:
+            EXECUTOR.shutdown(wait=False, cancel_futures=True)
+            EXECUTOR = None
+
+    check_updates("")
+    #gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
+
+def clear_temp_download_dir():
+    """
+    Deletes all files and subfolders inside TEMP_DOWNLOAD_DIR.
+    Keeps the root TEMP_DOWNLOAD_DIR folder.
+    """
+    if not TEMP_DOWNLOAD_DIR.exists():
+        return
+
+    for item in TEMP_DOWNLOAD_DIR.iterdir():
+        try:
+            if item.is_file() or item.is_symlink():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+        except Exception as e:
+            print(f"Failed to delete {item}: {e}")
+
+    print("Temporary download directory cleared.")
 
 def check_updates(url: str) -> str: # Function to check for mod updates by comparing the 'Last-Modified' header from the server
     global gLast_updated # Global variable to store the 'Last-Modified' header of the latest update
     global gUpdateMod_button # Global variable to reference the update button in the UI
     global gUpdateSize # Stores the size of the zip
+    global to_download
+    global gNewUpdates
+    global gDownloadCancel_button
+    global gDownloadCancel_label
+    remote_files = get_remote_file_list()
+
+    to_download = [f for f in remote_files if file_needs_update(f[0], f[1])]
+    gUpdateButton_label.configure(text="Checking")
+    gUpdate_label.configure(text="Checking For Updates")
+    
+    if gDownloadCancel_button != None:
+        gDownloadCancel_button.destroy()
+        gDownloadCancel_label.destroy()
+    
+    if not to_download:
+        print("All files are up to date.")
+        gNewUpdates = False
+        gUpdateButton_label.configure(text="Check For Updates")
+        gUpdateMod_button.configure(text="UpToDate")
+        gUpdate_label.configure(text=f"Improvement Mod Up-to-date")
+        clear_temp_download_dir()
+        return
+    else:
+        gNewUpdates = True
+        gUpdateButton_label.configure(text="Download Update")
+        gUpdateMod_button.configure(text="Updates")
+        gUpdate_label.configure(text=f"Found New Updates")
+         
+        #print(f"\nTotal files needing download: {len(to_download)}\n")
+        #gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(gLast_updated, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
+        gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
+    
+    return
     
     debug("check_updates", "checking for updates") # Log the start of the update check
     try: # Send a HEAD request to the URL to get metadata, but not the content
@@ -346,7 +447,6 @@ def check_updates(url: str) -> str: # Function to check for mod updates by compa
         add_log("Cannot check for updates " + str(e)) # Add the error message to the log
         gUpdateButton_label.configure(text="Reinstall Mod")
         return "" # Return an empty string to indicate an error has occurred
-
 
 def startGame_button_click() -> None:
     global gThreadStop_event
@@ -452,6 +552,7 @@ def option_changed(choice) -> None:
     gAi_label.configure(text=ai_info) # Update the label text with AI information
     update_file(choice, os.path.join(gGamePath, "ImpMod_AISetting")) # Update the AI setting file
 
+"""
 def read_ai_zip() -> None:
     global gSelectedAI
     global gAiDropDown
@@ -521,7 +622,7 @@ def read_ai_zip() -> None:
     except Exception as e: # Exception
         debug(f"read_ai_zip An unexpected error has occurred: {e}", "Exception when reading ImpMod_AIs")
         add_log("Cannot load AI list " + str(e))  
-
+"""
 def checkbox_D3D9_state() -> None:
     if gD3D9Var_intVar.get() == 0:
         old_name = "D3D9.dll"
@@ -752,7 +853,6 @@ def make_config() -> None:  # Make a user config file to save preferences
         debug(f"make_config OS error has occurred: {e}", "OSError")
     except Exception as e:  # Exception
         debug(f"make_config An unexpected error has occurred: {e}", "Exception")
-
 
 def select_folder() -> None:
     global gGamePath
@@ -990,7 +1090,103 @@ def install_check():
             gVCredistx86_label.configure(text_color="gray")
             gVCredistx86_label.configure(text="VC Redist Unavailable")
             gVCredistx86_label.configure(cursor="")
-    
+
+def get_remote_file_list():
+    #print("Fetching remote file list...")
+    try:
+        r = requests.get(METADATA_URL, headers=HEADERS)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        #print(f"Failed to fetch metadata: {e}")
+        debug(f"Failed to fetch metadata: {e}")
+        return []
+
+    files = []
+    for file in data.get("files", []):
+        name = file.get("name")
+        size = int(file.get("size", 0))
+
+        if name and name.startswith(SUBFOLDER) and size > 0:
+            relative_name = name[len(SUBFOLDER):]
+            files.append((relative_name, size))
+    return files
+
+
+def file_needs_update(relative_path, remote_size):
+    #print("relative_path",relative_path)
+    #print("remote_size",remote_size)
+    #print("LOCAL_COMPARE_DIR",LOCAL_COMPARE_DIR)
+    local_file = LOCAL_COMPARE_DIR / relative_path
+    if not local_file.exists():
+        #print(f"[MISSING] {relative_path}")
+        return True
+    if local_file.stat().st_size != remote_size:
+        #print(f"[UPDATED] {relative_path}")
+        return True
+    return False
+
+
+def download_and_copy(relative_path):
+    url = f"{DOWNLOAD_BASE}/{SUBFOLDER}{relative_path}"
+    temp_path = TEMP_DOWNLOAD_DIR / relative_path
+    final_path = FINAL_TARGET_DIR / relative_path
+    temp_path.parent.mkdir(parents=True, exist_ok=True)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if gThreadStop_event.is_set():
+        return
+
+    for attempt in range(1, MAX_RETRIES + 2):  # retries + first try
+        try:
+            # Download file
+            with requests.get(url, stream=True, headers=HEADERS, allow_redirects=True) as r:
+                r.raise_for_status()
+                with open(temp_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if gCancelDownload: # Check if user Cancelled the download
+                            gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
+                            gThreadStop_event.set()
+                            debug("download_and_copy", "Download cancelled " + str(gCancelDownload))
+                            enable_all_widgets()
+                            break
+                        if gThreadStop_event.is_set():
+                            return
+
+                        if not gApp.winfo_exists(): # Check if the GUI is closed
+                            gThreadStop_event.set() # kill the thread
+                            enable_all_widgets()
+                            return
+
+                        if chunk:
+                            f.write(chunk)
+
+            # Copy to final directory immediately
+            shutil.copy2(temp_path, final_path)
+            #print(f"Done -> {relative_path}")
+
+
+            if gCancelDownload == False:
+                gApp.after(0, lambda: gUpdate_label.configure(text= str(len(to_download)) + " New files, Downloading... " + str(relative_path)))
+
+            # Remove temp file
+            temp_path.unlink(missing_ok=True)
+            return
+
+        except requests.exceptions.HTTPError as e:
+            if r.status_code == 401:
+                #print(f"[SKIPPED 401] {relative_path}")
+                debug(f"[SKIPPED 401] {relative_path}")
+                return
+            else:
+                debug(f"[HTTP ERROR] {relative_path} ({e}), attempt {attempt}")
+        except Exception as e:
+            debug(f"[ERROR] {relative_path} ({e}), attempt {attempt}")
+
+
+
+    #print(f"[FAILED] {relative_path} after {MAX_RETRIES + 1} attempts")
+
 def main():
     debug("main Starting", "main()")
     ctk.set_appearance_mode("dark") # Set to use appearance mode for light and dark themes
@@ -1003,6 +1199,11 @@ def main():
     global gAppWidth
     global gAppHeight
     global gLog_font
+
+    global LOCAL_COMPARE_DIR 
+    global TEMP_DOWNLOAD_DIR 
+    global FINAL_TARGET_DIR
+
     gAppWidth = 1130 
     gAppHeight = 720
     gMain_font = ctk.CTkFont(family="arial", size=19,weight="bold")
@@ -1033,9 +1234,20 @@ def main():
 
     make_config()
     interface()
-    find_download_mirror() 
+
+    LOCAL_COMPARE_DIR = Path(gGamePath)      # Folder to compare against
+    TEMP_DOWNLOAD_DIR = Path(os.getcwd()) / "download"       # Temp download location
+    FINAL_TARGET_DIR = Path(gGamePath)         # Where files get copied to
+    #print("LOCAL_COMPARE_DIR",LOCAL_COMPARE_DIR)
+    #print("TEMP_DOWNLOAD_DIR",TEMP_DOWNLOAD_DIR)
+    #print("FINAL_TARGET_DIR",FINAL_TARGET_DIR)
+
+    TEMP_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_TARGET_DIR.mkdir(parents=True, exist_ok=True)
+
+    #find_download_mirror() 
     check_updates("https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new")
-    read_ai_zip()
+    #read_ai_zip()
     install_check()
 
     today = date.today()
@@ -1097,8 +1309,8 @@ if __name__ == '__main__':
     else: # Running as a script 
         gApp.iconbitmap(r"icon\icon.ico") # Set the path to the icon file for script
 
-    gVersion:str = "1.03" # App version
-    gGitHubVersion:str = "version1.03"
+    gVersion:str = "1.04" # App version
+    gGitHubVersion:str = "version1.04"
 
     gModDownloadUrl:str = "" # Hold the URL for the mirror download
     gLast_updated:str = "" # Stores the last date the file was installed
@@ -1146,5 +1358,23 @@ if __name__ == '__main__':
     gAi_font:ctk.CTkFont = None
     gLogTextBox:ctk.CTkTextbox = None
     gUpdateSize = None
+    to_download = None
+    EXECUTOR = None
+    gNewUpdates = False
 
+    # ==========================
+    # CONFIG
+    # ==========================
+    ARCHIVE_ID = "aoe3-imp-mod-new"
+    SUBFOLDER = "AoE3ImpMod_New/"
+
+    DOWNLOAD_BASE = f"https://archive.org/download/{ARCHIVE_ID}"
+    METADATA_URL = f"https://archive.org/metadata/{ARCHIVE_ID}"
+    LOCAL_COMPARE_DIR = None
+    TEMP_DOWNLOAD_DIR = None
+    FINAL_TARGET_DIR = None
+
+    MAX_THREADS = 12
+    HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    MAX_RETRIES = 2  # Retry failed downloads this many times
     main()
