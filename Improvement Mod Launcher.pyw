@@ -1,10 +1,14 @@
-"""
-Improvement Mod Launcher
-"""
+import os
+import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import paramiko
+import sys
+
 from bs4 import BeautifulSoup
 from configparser import ConfigParser
 from ctypes import windll
-import os
 from pathlib import Path
 from PIL import Image, ImageTk
 from psutil import process_iter
@@ -12,13 +16,11 @@ import requests, urllib.parse
 import shutil
 from subprocess import run, CalledProcessError, STARTUPINFO, STARTF_USESHOWWINDOW
 from tempfile import mkdtemp
-from threading import Thread,Event
 from tkinter import filedialog, messagebox
 import tkinter as tk
 from winreg import OpenKey, QueryValueEx,HKEY_LOCAL_MACHINE
 from zipfile import ZipFile
 import customtkinter as ctk
-import sys
 from datetime import date
 import webbrowser
 import ctypes.wintypes
@@ -27,9 +29,8 @@ from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import requests
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-import threading
+import platform
+import ctypes
 
 def debug(message:str, log:str) -> None: # Needs string message and string log message, does not return anything
     if gDebugger: # Display logs when enabled
@@ -48,6 +49,198 @@ def add_log(message:str) -> None: # Adds a log message to gLogMessages and updat
     gLogTextBox.insert("end", message + "\n") # Insert the log message
     gLogTextBox.yview("end") # Scroll to the end of the textbox
     gLogTextBox.configure(state="disabled") # Disable user input again
+
+def is_parent_alive() -> bool:
+    """Cross-platform check to see if the parent process is still running."""
+    try:
+        # Unix/Linux/macOS implementation
+        if platform.system() != "Windows":
+            if os.getppid() <= 1:  # Process became orphaned (adopted by init)
+                return False
+            os.kill(PARENT_PID, 0) # Signal 0 checks for process existence
+            return True
+        
+        # Windows implementation using native system handles
+        else:
+            PROCESS_QUERY_INFORMATION = 0x0400
+            STILL_ACTIVE = 259
+            
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, PARENT_PID)
+            if handle:
+                exit_code = ctypes.c_ulong()
+                ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return exit_code.value == STILL_ACTIVE
+            return False
+    except Exception:
+        return False
+
+def check_parent_status() -> bool:
+    """Probes the parent process. Triggers a global shutdown event if it died."""
+    if shutdown_event.is_set():
+        return True
+    if not is_parent_alive():
+        debug("check_parent_status - Parent EXE is no longer running! Aborting background thread", "")
+        shutdown_event.set()
+        return True
+    return False
+
+
+def start_update_check():
+    """Spawns the update check task inside a non-blocking daemon background thread."""
+    gApp.after(0, lambda: gUpdate_label.configure(text="Checking For Updates"))
+    check_thread = threading.Thread(target=check_for_update_process, daemon=True)
+    check_thread.start()
+    debug("check_parent_status - Update check task spawned successfully in a separate thread", "")
+
+def install_check():
+    global gInterface_canvas
+    global gDirectPlay_button
+    global gDirectPlay_label
+    global gDirectx_button
+    global gDirectx_Jun2010_label
+    if check_files(["dpnet.dll.mui","dpnsvr.exe.mui"]):
+        gDirectPlay_button.unbind("<Button-1>")
+        gDirectPlay_label.unbind("<Button-1>")
+        gDirectPlay_label.configure(text_color="gray")
+        gDirectPlay_label.configure(text="DirectPlay Enabled")
+        gDirectPlay_label.configure(cursor="")
+    else:
+        debug("DirectPlay is not", "enabled")
+        gDirectPlay_label.configure(text="Enable DirectPlay")
+
+    if check_files(["d3dx9_25.dll","d3dx9_43.dll"]): # Check if DirectX June 2010 is installed
+        debug("install_check DirectX9 June 2010 Redistributable is:", "Installed")
+        gDirectx_button.unbind("<Button-1>")
+        gDirectx_Jun2010_label.unbind("<Button-1>")
+        gDirectx_Jun2010_label.configure(text_color="gray")
+        gDirectx_Jun2010_label.configure(text="DirectX9 Installed")
+        gDirectx_Jun2010_label.configure(cursor="")
+    else:
+        debug("install_check DirectX9 June 2010 Redistributable is:", "Not Installed")
+        if os.path.exists("directx_Jun2010_redist.exe"):
+            gDirectx_Jun2010_label.configure(text="Install Directx")
+        else:
+            gDirectx_button.unbind("<Button-1>")
+            gDirectx_Jun2010_label.unbind("<Button-1>")
+            gDirectx_Jun2010_label.configure(text_color="gray")
+            gDirectx_Jun2010_label.configure(text="Directx9 Unavailable")
+            gDirectx_Jun2010_label.configure(cursor="")
+
+    if check_files(["msxml4.dll","msxml4r.dll"]):
+        debug("install_check msxml4r is:", "Installed")
+        gMsxmlenu_button.unbind("<Button-1>")
+        gMsxmlenu_label.unbind("<Button-1>")
+        gMsxmlenu_label.configure(text_color="gray")
+        gMsxmlenu_label.configure(text="MSXML4 Installed")
+        gMsxmlenu_label.configure(cursor="")
+    else:
+        debug("install_check MSXMl4 is:", "Not Installed")
+        if os.path.exists("msxmlenu.msi"):
+            gMsxmlenu_label.configure(text="Install MSXML4")
+        else:
+            gMsxmlenu_button.unbind("<Button-1>")
+            gMsxmlenu_label.unbind("<Button-1>")
+            gMsxmlenu_label.configure(text_color="gray")
+            gMsxmlenu_label.configure(text="MSXML4 Unavailable")
+            gMsxmlenu_label.configure(cursor="")
+
+    if check_files(["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]):
+        debug("install_check VC++ Redistributable is:", "Installed")
+        gVCredistx86_button.unbind("<Button-1>")
+        gVCredistx86_label.unbind("<Button-1>")
+        gVCredistx86_label.configure(text_color="gray")
+        gVCredistx86_label.configure(text="VC++ Redist Installed")
+        gVCredistx86_label.configure(cursor="")
+    else:
+        debug("install_check MSXML4 is:", "Not Installed")
+        if os.path.exists("msxmlenu.msi"):
+            gVCredistx86_label.configure(text="Install VC++ Redist")
+        else:
+            gVCredistx86_button.unbind("<Button-1>")
+            gVCredistx86_label.unbind("<Button-1>")
+            gVCredistx86_label.configure(text_color="gray")
+            gVCredistx86_label.configure(text="VC Redist Unavailable")
+            gVCredistx86_label.configure(cursor="")
+
+def enable_directplay() -> None:
+    gApp.configure(state="disabled")
+    try:
+        # Set up the STARTUPINFO to hide the console window
+        startupinfo = STARTUPINFO()
+        startupinfo.dwFlags |= STARTF_USESHOWWINDOW
+        result = run(
+            ["dism", "/online", "/enable-feature", "/featurename:DirectPlay", "/all", "/norestart"],
+            capture_output=True,
+            text=True,
+            check=True,
+            startupinfo=startupinfo # Hide the console window
+        )
+        if "The operation completed successfully" in result.stdout:
+            debug("enable_directplay DirectPlay has been enabled", "successfully")
+            gApp.configure(state="normal")
+            install_check()
+        else:
+            debug("enable_directplay Error", "DirectPlay might already be enabled or an error has occurred")
+            add_log("Error: DirectPlay might already be enabled or an error has occurred")
+            gApp.configure(state="normal")
+    except CalledProcessError as e:
+        debug("Error enabling DirectPlay",str(e))
+        add_log("Error enabling DirectPlay")
+        gApp.configure(state="normal")
+
+def show_logs() -> None:
+    global gLogTextBox
+    global gLogMessages
+    global gInterface_canvas
+    if find_label_by_name(gLogTextBox) and gEnableLogs_checkbox.get() == 1: return # Check if the log box is showing and it is enabled
+    if gEnableLogs_checkbox.get() == 1: # Logs are enabled
+        gLogTextBox = ctk.CTkTextbox(gApp, width=580, height=150,text_color="red",font= gLog_font,fg_color="#2a1107")
+        gInterface_canvas.create_window(20, 640, window=gLogTextBox,anchor="w")
+        gLogTextBox.configure(cursor="arrow")
+        gLogTextBox.configure(state="disabled")
+        for item in gLogMessages:
+            gLogTextBox.configure(state="normal") # Temporarily enable state to update text
+            gLogTextBox.insert("end", item + "\n") # Insert the log message
+            gLogTextBox.yview("end") # Scroll to the end of the textbox
+            gLogTextBox.configure(state="disabled") # Disable user input again
+        gConfigUserInfo["showlogs"] = "1"
+        read_write_config("w")
+        read_write_config("r")
+    else: # Remove the log window
+        for item in gInterface_canvas.find_all(): # Iterate through all canvas objects
+            if gInterface_canvas.type(item) == "window": # Check if it's a window object
+                if gInterface_canvas.itemcget(item, "window") == str(gLogTextBox):
+                    gInterface_canvas.delete(item)
+                    break
+        gConfigUserInfo["showlogs"] = "0"
+        read_write_config("w")
+        read_write_config("r")
+
+def select_folder() -> None:
+    global gGamePath
+    try:
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            folder_path = os.path.normpath(folder_path) # Automatically converts to Windows-style
+            gFolderPath_label.configure(text=str(truncate_string(folder_path, max_length=180, placeholder="...")))
+            gGamePath = folder_path
+            gConfigUserInfo["gamepath"] = gGamePath
+            read_write_config("w")
+            read_write_config("r")
+            debug("select_folder Change the game folder to", gGamePath)
+            gInterface_canvas.pack_forget()
+            main()
+
+    except PermissionError: # File Permission Error
+        debug("select_folder Permission denied", "PermissionError when setting the game folder")
+        add_log("PermissionError when setting the game folder")
+    except OSError as e: # OSError
+        debug(f"select_folder OS error has occurred: {e}", "OSError")
+        add_log("OS error has occurred when setting the game folder")
+    except Exception as e: # Exception
+        debug(f"select_folder An unexpected error has occurred: {e}", "Exception")
+        add_log("An unexpected error has occurred when setting the game folder")
 
 def is_admin() -> bool: # Checks if the Launcher is running as admin
     try:
@@ -146,22 +339,10 @@ def read_write_config(fileAction:str) -> None: # r or w values only
         debug("read_write_config", f"Cannot access {gConfigPath}: {e}")
         add_log("Error accessing config " + str(e))
 
-"""
-def is_process_running(process_name:str) -> bool: # Check if a process with the given name is running
-    for proc in process_iter(['name']):
-        if proc.info['name'] == process_name:
-            debug("is_process_running","Found process " + str(process_name))
-            return True
-    debug("is_process_running","Did not find process " + str(process_name))
-    return False
-"""
 def download_update_cancel() -> None: # Cancel the download
-    global gCancelDownload
-    gCancelDownload = True
-    if EXECUTOR:
-        EXECUTOR.shutdown(wait=False, cancel_futures=True)
-
-    debug("download_update_cancel", "Download cancelled by user")
+    """
+    STOP DOWNLOAD
+    """
 
 def enable_all_widgets() -> None: # Enables widgets
     for widget in gApp.winfo_children():
@@ -178,278 +359,218 @@ def disable_all_widgets() -> None: # Disable widgets
             widget.configure(state="disabled") # Set widget to disabled
         if isinstance(widget, ctk.CTkLabel) and widget.cget("text_color") == "white": # Check if the widget is a Label
             widget.configure(text_color="#636363") # Change the text color to gray
-"""
-def download_update_thread(): # Download the new update as a separate thread
-    debug("download_update_thread", "Download update as a new thread")
-    # Global variables used in the function
-    global gUpdate_label
-    global gCancelDownload
-    global gThreadStop_event
-    global gStartGame_button
-    global gStartGameButton_label
-    global gAiDropDown
-    global gUpdateSize
-    process_names = ["age3m.exe", "age3x.exe", "age3.exe", "age3y.exe"]
-    for process_name in process_names:
-        if is_process_running(process_name):
-            gThreadStop_event.set()
-            debug("download_update_thread", "The processes is running " + str(process_name))
-            add_log(f"Cannot update: {process_name} is running")
-            enable_all_widgets()
-            return
 
-    zip_path: str = os.path.join(gGamePath, "mod_file.zip") # Define the zip file path
-    gCancelDownload = False # Set download cancel status to False
-    try: # Try downloading the update
-        if os.path.exists(zip_path):
-            debug("download_update_thread", "Removing mod_file.zip")
-            os.remove(zip_path)
 
-        scraper = cloudscraper.create_scraper(interpreter="nodejs", delay=5) # Create a Cloudscraper session that solves Cloudflare
-        with scraper.get(gModDownloadUrl, stream=True, timeout=60) as response:
-            response.raise_for_status() # Raise an error if the request fails
-            total_size = int(response.headers.get("Content-Length", 0)) # Get file size
-            block_size = 1024 # Define block size for downloading (1 KB)
-            downloaded_size = 0
-            with open(zip_path, "wb") as file:
-                for data in response.iter_content(block_size):
-                    if gCancelDownload: # Check if user Cancelled the download
-                        gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
-                        gThreadStop_event.set()
-                        debug("download_update_thread", "Download cancelled " + str(gCancelDownload))
-                        enable_all_widgets()
-                        break
-                    if not gApp.winfo_exists(): # Check if the GUI is closed
-                        gThreadStop_event.set() # kill the thread
-                        enable_all_widgets()
-                        return
-                    file.write(data) # Write data to the file
-                    downloaded_size += len(data) # Update downloaded size
-                    progress_message = f"Downloaded: {downloaded_size / (1024 * 1024):.2f} MB / {total_size / (1024 * 1024):.2f} MB" # Update progress message in the UI
-                    gApp.after(0, lambda: gUpdate_label.configure(text=progress_message))
-        if not gCancelDownload: # If download completes successfully
-            debug("download_update_thread", "Download complete")
-            gApp.after(0, lambda: gUpdate_label.configure(text="Download complete. Extracting..."))
-        else: # If download was Cancelled
-            debug("download_update_thread", "Download cancelled")
-            gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
-    except Exception as e: # Handle download errors
-        gApp.after(0, lambda: gUpdate_label.configure(text="Download error"))
-        debug("download_update_thread", "Download error:" + str(e))
-        add_log("Download error:" + str(e))
-        gThreadStop_event.set()
-        enable_all_widgets()
-        return
 
-    if not gCancelDownload:
-        try:
-            with ZipFile(zip_path, "r") as zip_ref: # Open the downloaded ZIP file
-                members = zip_ref.infolist()
-                total_files = len(members) # Get the total number of files to extract
-                current_exe = os.path.basename(sys.argv[0]).lower()
-                for index, member in enumerate(members, start=1):
-                    if gCancelDownload: # Check if user Cancelled extraction
-                        debug("Extraction cancelled:", "")
-                        gApp.after(0, lambda: gUpdate_label.configure(text="Extraction cancelled"))
-                        enable_all_widgets()
-                        return
-
-                    if os.path.basename(member.filename).lower() == current_exe:
-                        continue
-
-                    target_path = os.path.join(gGamePath, member.filename) # Define extraction path
-                    if member.filename.endswith("/"): # Create directories if needed
-                        os.makedirs(target_path, exist_ok=True)
-                    else:
-                        parent_dir = os.path.dirname(target_path)
-                        os.makedirs(parent_dir, exist_ok=True)
-                        if os.path.exists(target_path): # Remove existing file before extraction
-                            os.remove(target_path)
-                        with zip_ref.open(member) as source, open(target_path, "wb") as target: # Extract and copy file contents
-                            copyfileobj(source, target)
-                    progress_text = f"Extracting {index}/{total_files}: {member.filename}" # Update UI with extraction progress
-                    gApp.after(0, lambda text=progress_text: gUpdate_label.configure(text=text))
-            debug("download_update_thread", "Updating AI...")
-            read_ai_zip()
-            debug("download_update_thread", "Extraction complete")
-            gApp.after(0, lambda: gUpdate_label.configure(text="Extraction complete"))
-
-            if os.path.exists(os.path.join(gGamePath, "age3m.exe")):
-                gStartGame_button.configure(command = startGame_button_click)
-                gStartGameButton_label.bind("<Button-1>",lambda event: gStartGame_button.invoke())
-                gStartGameButton_label.configure(text_color="white")
-                gStartGameButton_label.configure(cursor="hand2")
-                gAiDropDown.configure(state="normal")
-
-            if os.path.exists("D3D9.dll") or os.path.exists("D3D9.dll_Disabled"):
-                gD3D9_checkbox.configure(state="normal")
-
-        except Exception as e: # Handle extraction errors
-            gApp.after(0, lambda: gUpdate_label.configure(text="Extraction error"))
-            debug("download_update_thread", "Unzip error Extraction error:" + str(e))
-            add_log("Cannot unzip update, update failed " + str(e))
-            gThreadStop_event.set()
-
-    try: # Delete the ZIP file after extraction
-        debug("download_update_thread", "Deleting the downloaded zip file...")
-        os.remove(zip_path) # Remove ZIP file
-        debug("download_update_thread", "zip file deleted" + str(gLast_updated))
-        if not gCancelDownload: # If update was successful
-            gConfigUserInfo["lastupdate"] = gLast_updated
-            read_write_config("w") # Write update info to config
-            read_write_config("r")
-        else: # If download was Cancelled, show the update button again
-            enable_all_widgets()
-        gThreadStop_event.set()
-        check_updates("https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new") # Check for future updates
-        install_check()
-    except Exception as e: # Handle errors while deleting ZIP file
-        debug("download_update_thread", "Error deleting zip file:" + str(e))
-        add_log("Error deleting temporary update zip file " + str(e))
-        gThreadStop_event.set()
-    enable_all_widgets()
-"""
-def download_update() -> None:
-    # Multi-threaded download + copy
-    check_updates("")
-    if gNewUpdates == False:
-        return
-    create_button("gDownloadCancel_button", "gDownloadCancel_label", "Cancel Download", 20, 40,"Cancel Download", download_update_cancel)
-    global gCancelDownload
-    gCancelDownload = False
-    gApp.after(0, lambda: gUpdate_label.configure(text= "Preparing Download Please Wait"))
-    threading.Thread(target=download_update_process, daemon=True).start()
-
+def file_needs_update(local_path: Path, remote_size: int) -> bool:
     """
-    global gDownloadThread
-    debug("download_update", "Download update")
-    gApp.after(0, lambda: gUpdate_label.configure(text="Starting download..."))
-    disable_all_widgets()
-    create_button("gDownloadCancel_button", "gDownloadCancel_label", "Cancel Download", 20, 40,"Cancel Download", download_update_cancel)
-    gDownloadThread = Thread(target=download_update_thread, daemon=True)
-    gApp.after(1, gDownloadThread.start())
+    Compares the local file strictly by size.
     """
-def download_update_process():
-    global EXECUTOR
-
-    gThreadStop_event.clear()  # reset stop flag
-
-    EXECUTOR = ThreadPoolExecutor(max_workers=MAX_THREADS)
-
-    futures = []
+    if not local_path.exists():
+        return True
 
     try:
-        # Submit tasks
-        for f in to_download:
-            if gThreadStop_event.is_set():
-                break
-            futures.append(EXECUTOR.submit(download_and_copy, f[0]))
+        # Check File Size - If sizes differ, the file has changed
+        if local_path.stat().st_size != remote_size:
+            return True
+    except Exception:
+        return True
 
-        # Wait for completion
-        for future in futures:
-            if gThreadStop_event.is_set():
-                break
-            future.result()
+    return False
 
+def download_mirror_process():
+    """Background task that runs the fast multi-threaded SFTP sync and download loops."""
+    gUpdateButton_label.unbind("<Button-1>")
+    gUpdateButton_label.configure(text_color="gray")
+    gUpdateButton_label.configure(cursor="")
+
+    gStartGameButton_label.unbind("<Button-1>")
+    gStartGameButton_label.configure(text_color="gray")
+    gStartGameButton_label.configure(cursor="")
+
+    transport = None
+    files_to_download = []
+    
+    list_lock = threading.Lock()
+    active_tasks_count = 0
+    tasks_done_event = threading.Event()
+
+    try:
+        debug(f"download_mirror_process - Connecting to {HOST}:{PORT}...", "")
+
+        transport = paramiko.Transport((HOST, PORT))
+        
+        transport.window_size = 2147483647  
+        transport.packet_size = 32768       
+        
+        transport.connect(username=USERNAME, password=PASSWORD)
+        gApp.after(0, lambda: gUpdate_label.configure(text="Connecting to Update Server..."))
+        debug(f"download_mirror_process - Connected successfully. [1/2] Speed-scanning remote directories in parallel...", "")
+
+        # --- [1/2] MULTI-THREADED SCANNING PHASE ---
+        with ThreadPoolExecutor(max_workers=MAX_CRAWL_WORKERS) as crawl_executor:
+            
+            def worker_scan_folder(folder_path):
+                nonlocal active_tasks_count
+                
+                if shutdown_event.is_set():
+                    return
+
+                local_sftp = None
+                try:
+                    local_sftp = paramiko.SFTPClient.from_transport(transport)
+                    items = local_sftp.listdir_attr(folder_path)
+                except Exception as e:
+                    if not shutdown_event.is_set():
+                        debug(f"download_mirror_process - [Warning] Failed to scan remote directory", "")
+                    items = []
+                finally:
+                    if local_sftp:
+                        local_sftp.close()
+
+                discovered_files = []
+                
+                for item in items:
+                    if shutdown_event.is_set():
+                        return
+                        
+                    remote_path = f"{folder_path}/{item.filename}".replace("//", "/")
+                    
+                    if stat.S_ISDIR(item.st_mode):
+                        with list_lock:
+                            active_tasks_count += 1
+                        crawl_executor.submit(worker_scan_folder, remote_path)
+                    else:
+                        relative_path = remote_path.replace(REMOTE_DIR, "", 1).lstrip("/")
+                        local_file_path = LOCAL_DIR / relative_path
+                        
+                        remote_size = item.st_size
+                        remote_mtime = int(item.st_mtime)  # Grab the remote timestamp integer
+                        
+                        if file_needs_update(local_file_path, remote_size):
+                            # Keep track of the remote_mtime along with the paths
+                            discovered_files.append((remote_path, relative_path, remote_mtime))
+
+                if discovered_files and not shutdown_event.is_set():
+                    with list_lock:
+                        files_to_download.extend(discovered_files)
+
+                with list_lock:
+                    active_tasks_count -= 1
+                    if active_tasks_count == 0 or shutdown_event.is_set():
+                        tasks_done_event.set()
+
+            active_tasks_count = 1
+            crawl_executor.submit(worker_scan_folder, REMOTE_DIR)
+            
+            while not tasks_done_event.is_set():
+                if tasks_done_event.wait(timeout=0.5):
+                    break
+                if shutdown_event.is_set():
+                    return
+
+        if shutdown_event.is_set():
+            return
+
+        total_updates = len(files_to_download)
+        if total_updates == 0:
+            gApp.after(0, lambda: gUpdate_label.configure(text="Update Finished"))
+            debug(f"download_mirror_process - [Success] Everything is up-to-date! No files have an update", "")
+
+            return
+
+
+        debug(f"download_mirror_process - Scan complete. Found {total_updates} files that have an update", "")
+        debug(f"download_mirror_process - [2/2] Starting MULTI-THREADED downloads ({MAX_DOWNLOAD_WORKERS} files concurrently)...", "")
+
+        # --- [2/2] MULTI-THREADED DOWNLOADING PHASE ---
+        def worker_download_file(file_info):
+            if shutdown_event.is_set():
+                return
+
+            remote_file_path, relative_file_path, remote_mtime = file_info
+            local_file_path = LOCAL_DIR / relative_file_path
+            
+            local_file_path.parent.mkdir(parents=True, exist_ok=True)
+            debug(f"download_mirror_process - Starting download: {relative_file_path}", "")
+
+            gApp.after(0, lambda: gUpdate_label.configure(text=f" -> Starting download: {relative_file_path}"))
+            
+            
+            local_sftp = None
+            try:
+                local_sftp = paramiko.SFTPClient.from_transport(transport)
+                
+                def file_progress_check(transferred, total):
+                    if shutdown_event.is_set():
+                        raise KeyboardInterrupt("download_mirror_process - Main script stopped. Aborting download.")
+
+                # Download file normally
+                local_sftp.get(remote_file_path, str(local_file_path), callback=file_progress_check)
+                
+                if not shutdown_event.is_set():
+                    # CRITICAL FIX: Overwrite the OS default creation time with the exact remote server timestamp
+                    # os.utime requires a tuple: (access_time, modification_time)
+                    os.utime(local_file_path, (remote_mtime, remote_mtime))
+                    debug(f"download_mirror_process - [Finished] {relative_file_path}", "")
+            except Exception as e:
+                if not shutdown_event.is_set():
+                    debug(f"download_mirror_process - [ERROR] Failed downloading {relative_file_path}: {e}", "")
+            finally:
+                if local_sftp:
+                    local_sftp.close()
+
+        # Submit filtered files into the concurrent download thread pool
+        with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_WORKERS) as download_executor:
+            futures = [download_executor.submit(worker_download_file, f) for f in files_to_download]
+            
+            while any(not f.done() for f in futures):
+                if shutdown_event.is_set():
+                    download_executor.shutdown(wait=False, cancel_futures=True)
+                    return
+                threading.Event().wait(0.2)
+
+        if not shutdown_event.is_set():
+            debug(f"[Success] Remote mirror sync completed successfully.", "")
+
+    except Exception as e:
+        if not shutdown_event.is_set():
+            debug(f"An error occurred during multi-threaded background execution: {e}", "")
+        
     finally:
-        if EXECUTOR:
-            EXECUTOR.shutdown(wait=False, cancel_futures=True)
-            EXECUTOR = None
-
-    check_updates("")
-    #gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
-
-def clear_temp_download_dir():
-    """
-    Deletes all files and subfolders inside TEMP_DOWNLOAD_DIR.
-    Keeps the root TEMP_DOWNLOAD_DIR folder.
-    """
-    if not TEMP_DOWNLOAD_DIR.exists():
-        return
-
-    for item in TEMP_DOWNLOAD_DIR.iterdir():
-        try:
-            if item.is_file() or item.is_symlink():
-                item.unlink()
-            elif item.is_dir():
-                shutil.rmtree(item)
-        except Exception as e:
-            print(f"Failed to delete {item}: {e}")
-
-    print("Temporary download directory cleared.")
-
-def check_updates(url: str) -> str: # Function to check for mod updates by comparing the 'Last-Modified' header from the server
-    global gLast_updated # Global variable to store the 'Last-Modified' header of the latest update
-    global gUpdateMod_button # Global variable to reference the update button in the UI
-    global gUpdateSize # Stores the size of the zip
-    global to_download
-    global gNewUpdates
-    global gDownloadCancel_button
-    global gDownloadCancel_label
-    remote_files = get_remote_file_list()
-
-    to_download = [f for f in remote_files if file_needs_update(f[0], f[1])]
-    gUpdateButton_label.configure(text="Checking")
-    gUpdate_label.configure(text="Checking For Updates")
-    
-    if gDownloadCancel_button != None:
-        gDownloadCancel_button.destroy()
-        gDownloadCancel_label.destroy()
-    
-    if not to_download:
-        print("All files are up to date.")
-        gNewUpdates = False
+        if transport:
+            transport.close()
+        debug("SFTP Connection closed safely.", "")
+        gApp.after(0, lambda: gUpdate_label.configure(text="Update Finished"))
         gUpdateButton_label.configure(text="Check For Updates")
-        gUpdateMod_button.configure(text="UpToDate")
-        gUpdate_label.configure(text=f"Improvement Mod Up-to-date")
-        clear_temp_download_dir()
-        return
-    else:
-        gNewUpdates = True
-        gUpdateButton_label.configure(text="Download Update")
-        gUpdateMod_button.configure(text="Updates")
-        gUpdate_label.configure(text=f"Found New Updates")
-         
-        #print(f"\nTotal files needing download: {len(to_download)}\n")
-        #gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(gLast_updated, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
-        gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
-    
-    return
-    
-    debug("check_updates", "checking for updates") # Log the start of the update check
-    try: # Send a HEAD request to the URL to get metadata, but not the content
+        gUpdateButton_label.bind("<Button-1>", lambda event: download_update())
+        gUpdateButton_label.configure(text_color="white")  # Or your original color
+        gUpdateButton_label.configure(cursor="hand2")      # Restores the clickable hand pointer
 
-        # Use a proxy that fetches the HTML for us
-        proxy_url = "https://api.allorigins.win/get?url=" + urllib.parse.quote(url, safe="")
-        response = requests.get(proxy_url, timeout=15)
-        response.raise_for_status()
-        html = response.json()["contents"]
+        gStartGameButton_label.bind("<Button-1>", lambda event: startGame_button_click())
+        gStartGameButton_label.configure(text_color="white")  # Or your original color
+        gStartGameButton_label.configure(cursor="hand2")      # Restores the clickable hand pointer
+        read_ai_zip()
 
-        soup = BeautifulSoup(html, "html.parser")
-        updated_tag = soup.find("h5", string="Updated")
-        if updated_tag:
-            time_tag = updated_tag.find_next("time")
-            if time_tag:
-                gLast_updated = time_tag.text.strip()
+def start_mirror_download():
+    """Spawns the mirror task inside a non-blocking daemon background thread."""
+    download_thread = threading.Thread(target=download_mirror_process, daemon=True)
+    download_thread.start()
+    debug("start_mirror_download - Download task spawned successfully in a separate thread", "")
 
-        debug("check_updates - webcheck update",gLast_updated)
-        if gLast_updated != gConfigUserInfo["lastupdate"] :
-            debug("check_updates", f"{gConfigUserInfo['lastupdate']} != {gLast_updated}") # Log the mismatch between the stored and received date
-            gUpdate_label.configure(text=f"Improvement Mod New Update - {truncate_string(gLast_updated, max_length=550, placeholder="...")}") # Update the UI to indicate that a new update is available
-            gUpdateMod_button.configure(text="Update Now") # Enable the update button for the user to click
-        else:  # If the dates match, the mod is up-to-date
-            debug("check_updates", "UpToDate") # Log that the mod is up-to-date
-            gUpdate_label.configure(text=f"Improvement Mod Up-to-date - {gLast_updated}") # Update the UI to indicate that the mod is up-to-date
-            gUpdateButton_label.configure(text="Reinstall Mod")
+def download_update() -> None:
+    global LOCAL_DIR
+    try:
+        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        start_mirror_download()
 
-    except requests.RequestException as e: # Catch network-related errors during the HTTP request
-        debug("check_updates Error retrieving last modified date:", str(e)) # Log the error message
-        add_log("Cannot check for updates " + str(e)) # Add the error message to the log
-        gUpdateButton_label.configure(text="Reinstall Mod")
-        return "" # Return an empty string to indicate an error has occurred
+    except (KeyboardInterrupt, SystemExit):
+        debug("download_update - [Shutdown] Close signal received. Stopping all network threads instantly...", "")
+        shutdown_event.set()
+        sys.exit(0)
+
 
 def startGame_button_click() -> None:
-    global gThreadStop_event
     debug("startGame_button_click","Starting game")
     ret = windll.shell32.ShellExecuteW(None, "runas", os.path.join(gGamePath, "age3m.exe"), "arg1", None, 1)
     if ret <= 32: # ShellExecuteW returns a value greater than 32 if successful.
@@ -457,7 +578,6 @@ def startGame_button_click() -> None:
         add_log("Cannot start game")
     else:
         debug("startGame_button_click","Stop thread")
-        gThreadStop_event.set()
         sys.exit()
 
 def get_zip_top_level_folder_names(zip_file_path) -> set:
@@ -502,7 +622,7 @@ def extract_ai_from_zip(folder_name: str) -> None:
     """
     debug("extract_ai_from_zip", "Starting extraction...")
     output_dir: str = os.path.join(gGamePath, "AIM")
-    zip_path: str = os.path.join(gGamePath, "ImpMod_AIs") # Ensure .zip is included if not inferred
+    zip_path: str = os.path.join(gGamePath, "ImpMod_AIs.zip") # Ensure .zip is included if not inferred
     os.makedirs(output_dir, exist_ok=True) # Create the output directory if it doesn't exist
     try:
         with ZipFile(zip_path, 'r') as zf: # Open the zip file for reading
@@ -552,11 +672,21 @@ def option_changed(choice) -> None:
     gAi_label.configure(text=ai_info) # Update the label text with AI information
     update_file(choice, os.path.join(gGamePath, "ImpMod_AISetting")) # Update the AI setting file
 
-"""
 def read_ai_zip() -> None:
     global gSelectedAI
     global gAiDropDown
-    folder_names = get_zip_top_level_folder_names(os.path.join(gGamePath, "ImpMod_AIs")) # Get folder names from the ZIP file
+
+    file_path = os.path.join(gGamePath, "ImpMod_AIs.zip")
+        
+    # Pass the string into os.path.isfile()
+    if os.path.isfile(file_path):
+        add_log("Found ImpMod_AIs.zip")
+    else:
+        add_log("ImpMod_AIs.zip Missing")
+        return
+
+    folder_names = get_zip_top_level_folder_names(os.path.join(gGamePath, "ImpMod_AIs.zip")) # Get folder names from the ZIP file
+
     # Determine the path for the button image
     if getattr(sys, 'frozen', False): # Running as a PyInstaller bundle
         button_image_path = os.path.join(sys._MEIPASS, "button.png")
@@ -587,16 +717,16 @@ def read_ai_zip() -> None:
     CreateToolTip(gAiDropDown, "Selected AI will be used for both Skirmish and Multiplayer games")
     if folder_names:
         debug("read_ai_zip Found ai zip folders ", str(folder_names))
-    elif os.path.exists(os.path.join(gGamePath, "ImpMod_AIs")):
+    elif os.path.exists(os.path.join(gGamePath, "ImpMod_AIs.zip")):
         add_log("No folders found in ImpMod_AIs")
         return
     if not os.path.exists(os.path.join(gGamePath, "ImpMod_AISetting")):
         gAiDropDown.configure(state="disabled")
         add_log("Missing ImpMod_AISetting")
         return
-    if not os.path.exists(os.path.join(gGamePath, "ImpMod_AIs")):
+    if not os.path.exists(os.path.join(gGamePath, "ImpMod_AIs.zip")):
         gAiDropDown.configure(state="disabled")
-        add_log("Missing ImpMod_AIs")
+        add_log("Missing ImpMod_AIs.zip")
         return
     if not os.path.exists(os.path.join(gGamePath, "AIM")):
         gAiDropDown.configure(state="disabled")
@@ -622,7 +752,7 @@ def read_ai_zip() -> None:
     except Exception as e: # Exception
         debug(f"read_ai_zip An unexpected error has occurred: {e}", "Exception when reading ImpMod_AIs")
         add_log("Cannot load AI list " + str(e))  
-"""
+
 def checkbox_D3D9_state() -> None:
     if gD3D9Var_intVar.get() == 0:
         old_name = "D3D9.dll"
@@ -667,32 +797,6 @@ def check_files(checkFiles: list) -> bool:
     except Exception as e:
         debug(f"check_files An unexpected error has occurred: {e}", "Exception")
         add_log("An unexpected error has occurred when reading System32 SysWOW64")
-
-def enable_directplay() -> None:
-    gApp.configure(state="disabled")
-    try:
-        # Set up the STARTUPINFO to hide the console window
-        startupinfo = STARTUPINFO()
-        startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-        result = run(
-            ["dism", "/online", "/enable-feature", "/featurename:DirectPlay", "/all", "/norestart"],
-            capture_output=True,
-            text=True,
-            check=True,
-            startupinfo=startupinfo # Hide the console window
-        )
-        if "The operation completed successfully" in result.stdout:
-            debug("enable_directplay DirectPlay has been enabled", "successfully")
-            gApp.configure(state="normal")
-            install_check()
-        else:
-            debug("enable_directplay Error", "DirectPlay might already be enabled or an error has occurred")
-            add_log("Error: DirectPlay might already be enabled or an error has occurred")
-            gApp.configure(state="normal")
-    except CalledProcessError as e:
-        debug("Error enabling DirectPlay",str(e))
-        add_log("Error enabling DirectPlay")
-        gApp.configure(state="normal")
 
 def install_directx_june2010(redist_path) -> None:
     gApp.configure(state="disabled")
@@ -756,156 +860,114 @@ def install(fileName:str) -> None: # Install files
         gApp.configure(state="normal")
         return
 
-def is_msxml4_installed() -> bool:
-    paths = [r"SOFTWARE\Microsoft\MSXML4", r"SOFTWARE\WOW6432Node\Microsoft\MSXML4"]
-    for path in paths:
-        try:
-            with OpenKey(HKEY_LOCAL_MACHINE, path) as key:
-                version, _ = QueryValueEx(key, "Version")
-                debug(f"is_msxml4_installed MSXML 4.0 Installed: Version {version}","")
-                return True
-        except FileNotFoundError as e:
-            debug("msxml4 check error",str(e))
-            add_log("msxml4 check error")
-            continue  
-    return False
+def check_for_update_process():
+    """
+    Background task that connects to the SFTP server and scans files in parallel.
+    Aborts instantly, prints 'NEW update', and triggers the download if a discrepancy is found.
+    """
+    gUpdateButton_label.unbind("<Button-1>")
+    gUpdateButton_label.configure(text_color="gray")
+    gUpdateButton_label.configure(cursor="")
 
-def find_download_mirror() -> None:
-    global gModDownloadUrl
-    url = "https://www.moddb.com/downloads/start/286602?referer=https%3A%2F%2Fwww.moddb.com%2Fmods%2Fimprovement-mod%2Fdownloads%2F"
-    headers = {
-        "Referer": "https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new"
-    }
+    transport = None
+    active_tasks_count = 0
+    tasks_done_event = threading.Event()
+    list_lock = threading.Lock()
 
-    scraper = cloudscraper.create_scraper(
-        browser={"browser": "chrome", "platform": "windows", "mobile": False},
-        interpreter="js2py",
-        delay=5,      # allow JS challenge time
-        debug=True    # log details if challenge fails
-    )
+    # Clear previous results if global
+    files_to_download = []
+    files_to_download.clear() 
 
     try:
-        response = scraper.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-    except Exception as e:
-        add_log(f"Failed to fetch: {e}")
-        return
+        #print(f"Connecting to {HOST}:{PORT} to check for updates...")
+        gApp.after(0, lambda: gUpdate_label.configure(text="Connecting To The Server..."))
+        transport = paramiko.Transport((HOST, PORT))
+        
+        transport.window_size = 2147483647  
+        transport.packet_size = 32768       
+        
+        transport.connect(username=USERNAME, password=PASSWORD)
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    mirror = next((a["href"] for a in soup.find_all("a", href=True)
-                   if "/downloads/mirror/" in a["href"]), None)
+        # Keep max_workers low (e.g., 4) to avoid SSH 'MaxSessions' channel rejections
+        with ThreadPoolExecutor(max_workers=MAX_CRAWL_WORKERS) as crawl_executor:
+            
+            def worker_scan_folder(folder_path):
+                nonlocal active_tasks_count
 
-    if mirror:
-        gModDownloadUrl = "https://www.moddb.com" + mirror
-        debug("Mirror Link Found:", gModDownloadUrl)
-    else:
-        add_log("Mirror Link not Found")
+                try:
+                    if shutdown_event.is_set():
+                        return
 
-def make_config() -> None:  # Make a user config file to save preferences
-    debug("make_config Creating", "config")
-    global gConfigPath
-    global gConfigUserData
-    global gConfigUserInfo
-    global gGamePath
+                    local_sftp = None
+                    items = []
+                    try:
+                        local_sftp = paramiko.SFTPClient.from_transport(transport)
+                        items = local_sftp.listdir_attr(folder_path)
+                    except Exception as e:
+                        #print(f"[Error] Failed to scan directory '{folder_path}': {e}")
+                        items = []
+                    finally:
+                        if local_sftp:
+                            local_sftp.close()
 
-    gConfigUserData = ConfigParser()
-    gConfigPath = Path("ImprovementModLauncher.ini")
+                    discovered_files = []
+                    for item in items:
+                        gApp.after(0, lambda: gUpdate_label.configure(text="Checking Files - " + str(item.filename)))
+                        if shutdown_event.is_set():
+                            return
+                            
+                        remote_path = f"{folder_path}/{item.filename}".replace("//", "/")
+                        if stat.S_ISDIR(item.st_mode):
+                            with list_lock:
+                                active_tasks_count += 1
+                            crawl_executor.submit(worker_scan_folder, remote_path)
+                        else:
+                            relative_path = remote_path.replace(REMOTE_DIR, "", 1).lstrip("/")
+                            local_file_path = LOCAL_DIR / relative_path
+                            if file_needs_update(local_file_path, item.st_size):
+                                discovered_files.append((remote_path, relative_path, int(item.st_mtime)))
 
-    # Define defaults
-    defaults = {
-        "gamepath": str(os.getcwd()),
-        "lastupdate": "na",
-        "showlogs": "0",
-        "updatelastcheck": ""
-    }
+                    if discovered_files and not shutdown_event.is_set():
+                        with list_lock:
+                            files_to_download.extend(discovered_files)
 
-    try:
-        if gConfigPath.is_file():
-            # Read existing config
-            read_write_config("r")
-        else:
-            # Create section if file doesn’t exist
-            gConfigUserData["USERINFO"] = {}
+                finally:
+                    with list_lock:
+                        active_tasks_count -= 1
+                        if active_tasks_count == 0 or shutdown_event.is_set():
+                            tasks_done_event.set()
 
-        # Ensure section exists
-        if "USERINFO" not in gConfigUserData:
-            gConfigUserData["USERINFO"] = {}
-
-        # Fill in any missing keys with defaults
-        for key, value in defaults.items():
-            if key not in gConfigUserData["USERINFO"]:
-                gConfigUserData["USERINFO"][key] = value
-
-        # Save changes
-        read_write_config("w")
-        read_write_config("r")
-
-        gConfigUserInfo = gConfigUserData["USERINFO"]
-        gGamePath = gConfigUserInfo.get("gamepath", str(os.getcwd()))
-        if gGamePath == "":
-            gGamePath = str(os.getcwd())
-
-        debug("make_config Config created ", "successfully")
-
-    except PermissionError:  # File Permission Error
-        debug("make_config Permission denied", "PermissionError")
-    except OSError as e:  # OSError
-        debug(f"make_config OS error has occurred: {e}", "OSError")
-    except Exception as e:  # Exception
-        debug(f"make_config An unexpected error has occurred: {e}", "Exception")
-
-def select_folder() -> None:
-    global gGamePath
-    try:
-        folder_path = filedialog.askdirectory()
-        if folder_path:
-            folder_path = os.path.normpath(folder_path) # Automatically converts to Windows-style
-            gFolderPath_label.configure(text=str(truncate_string(folder_path, max_length=180, placeholder="...")))
-            gGamePath = folder_path
-            gConfigUserInfo["gamepath"] = gGamePath
-            read_write_config("w")
-            read_write_config("r")
-            debug("select_folder Change the game folder to", gGamePath)
-            gInterface_canvas.pack_forget()
-            main()
-
-    except PermissionError: # File Permission Error
-        debug("select_folder Permission denied", "PermissionError when setting the game folder")
-        add_log("PermissionError when setting the game folder")
-    except OSError as e: # OSError
-        debug(f"select_folder OS error has occurred: {e}", "OSError")
-        add_log("OS error has occurred when setting the game folder")
-    except Exception as e: # Exception
-        debug(f"select_folder An unexpected error has occurred: {e}", "Exception")
-        add_log("An unexpected error has occurred when setting the game folder")
-
-def show_logs() -> None:
-    global gLogTextBox
-    global gLogMessages
-    global gInterface_canvas
-    if find_label_by_name(gLogTextBox) and gEnableLogs_checkbox.get() == 1: return # Check if the log box is showing and it is enabled
-    if gEnableLogs_checkbox.get() == 1: # Logs are enabled
-        gLogTextBox = ctk.CTkTextbox(gApp, width=580, height=150,text_color="red",font= gLog_font,fg_color="#2a1107")
-        gInterface_canvas.create_window(20, 640, window=gLogTextBox,anchor="w")
-        gLogTextBox.configure(cursor="arrow")
-        gLogTextBox.configure(state="disabled")
-        for item in gLogMessages:
-            gLogTextBox.configure(state="normal") # Temporarily enable state to update text
-            gLogTextBox.insert("end", item + "\n") # Insert the log message
-            gLogTextBox.yview("end") # Scroll to the end of the textbox
-            gLogTextBox.configure(state="disabled") # Disable user input again
-        gConfigUserInfo["showlogs"] = "1"
-        read_write_config("w")
-        read_write_config("r")
-    else: # Remove the log window
-        for item in gInterface_canvas.find_all(): # Iterate through all canvas objects
-            if gInterface_canvas.type(item) == "window": # Check if it's a window object
-                if gInterface_canvas.itemcget(item, "window") == str(gLogTextBox):
-                    gInterface_canvas.delete(item)
+            active_tasks_count = 1
+            crawl_executor.submit(worker_scan_folder, REMOTE_DIR)
+            
+            while not tasks_done_event.is_set():
+                if tasks_done_event.wait(timeout=0.2):
                     break
-        gConfigUserInfo["showlogs"] = "0"
-        read_write_config("w")
-        read_write_config("r")
+                if shutdown_event.is_set():
+                    return
+
+        if len(files_to_download) > 0:
+            #print(f"\n[Info] {len(files_to_download)} updates found.")
+            gApp.after(0, lambda: gUpdate_label.configure(text="New Updates Found"))
+            gUpdateButton_label.configure(text="Download Updates")
+            gUpdateButton_label.bind("<Button-1>", lambda event: download_update())
+            gUpdateButton_label.configure(text_color="white")  
+            gUpdateButton_label.configure(cursor="hand2")      
+            return
+        
+        gApp.after(0, lambda: gUpdate_label.configure(text="No updates found"))
+        gUpdateButton_label.configure(text="Check For Updates")
+        gUpdateButton_label.bind("<Button-1>", lambda event: download_update())
+        gUpdateButton_label.configure(text_color="white")  
+        gUpdateButton_label.configure(cursor="hand2")      
+
+        #print("\n[Info] No updates found. System is up-to-date.")
+
+    except Exception as e:
+        debug(f"\n[Error] Failed checking for updates: {e}", "")
+    finally:
+        if transport:
+            transport.close()
 
 def create_button(new_button,new_label,tooltip,xpos,ypos,labeltext,function_name) -> None:
     button_width = 250
@@ -984,7 +1046,7 @@ def interface():
     gFolderPath_label = ctk.CTkLabel(gApp, text=str(truncate_string(gGamePath, max_length=180, placeholder="...")),font= gMain_font,fg_color="#2f1308",wraplength=800,anchor="w",justify='left')
     gInterface_canvas.create_window(300, 365, window=gFolderPath_label,anchor="nw")
 
-    create_button("gUpdateMod_button", "gUpdateButton_label", "Downloads and installs new mod updates, make sure your AoE3 folder is set correctly", 20, 40,"Update Now", download_update)
+    create_button("gUpdateMod_button", "gUpdateButton_label", "Downloads and installs new mod updates, make sure your AoE3 folder is set correctly", 20, 40,"Check For Updates", download_update)
     create_button("gStartGame_button", "gStartGameButton_label", "Launch age3m.exe", 20, 110,"Start Improvement Mod", startGame_button_click)
     create_button("gGamePath_button", "gGamePathButton_label", "Set the game folder path, by default the path is the root folder. Note: It is recommended to place the Improvement Mod Launcher.exe in the same folder as the game .exe", 20, 390,"Select AoE3 Folder", select_folder)
     create_button("gDirectPlay_button", "gDirectPlay_label", "Auto Enable DirectPlay", 20, 460,"Enable DirectPlay", enable_directplay)
@@ -1021,171 +1083,58 @@ def interface():
     if not os.path.exists(file_path):
         add_log("Run age3y.exe first before running the mod")
 
-def install_check():
-    global gInterface_canvas
-    global gDirectPlay_button
-    global gDirectPlay_label
-    global gDirectx_button
-    global gDirectx_Jun2010_label
-    if check_files(["dpnet.dll.mui","dpnsvr.exe.mui"]):
-        gDirectPlay_button.unbind("<Button-1>")
-        gDirectPlay_label.unbind("<Button-1>")
-        gDirectPlay_label.configure(text_color="gray")
-        gDirectPlay_label.configure(text="DirectPlay Enabled")
-        gDirectPlay_label.configure(cursor="")
-    else:
-        debug("DirectPlay is not", "enabled")
-        gDirectPlay_label.configure(text="Enable DirectPlay")
+def make_config() -> None:  # Make a user config file to save preferences
+    debug("make_config Creating", "config")
+    global gConfigPath
+    global gConfigUserData
+    global gConfigUserInfo
+    global gGamePath
 
-    if check_files(["d3dx9_25.dll","d3dx9_43.dll"]): # Check if DirectX June 2010 is installed
-        debug("install_check DirectX9 June 2010 Redistributable is:", "Installed")
-        gDirectx_button.unbind("<Button-1>")
-        gDirectx_Jun2010_label.unbind("<Button-1>")
-        gDirectx_Jun2010_label.configure(text_color="gray")
-        gDirectx_Jun2010_label.configure(text="DirectX9 Installed")
-        gDirectx_Jun2010_label.configure(cursor="")
-    else:
-        debug("install_check DirectX9 June 2010 Redistributable is:", "Not Installed")
-        if os.path.exists("directx_Jun2010_redist.exe"):
-            gDirectx_Jun2010_label.configure(text="Install Directx")
-        else:
-            gDirectx_button.unbind("<Button-1>")
-            gDirectx_Jun2010_label.unbind("<Button-1>")
-            gDirectx_Jun2010_label.configure(text_color="gray")
-            gDirectx_Jun2010_label.configure(text="Directx9 Unavailable")
-            gDirectx_Jun2010_label.configure(cursor="")
+    gConfigUserData = ConfigParser()
+    gConfigPath = Path("ImprovementModLauncher.ini")
 
-    if check_files(["msxml4.dll","msxml4r.dll"]):
-        debug("install_check msxml4r is:", "Installed")
-        gMsxmlenu_button.unbind("<Button-1>")
-        gMsxmlenu_label.unbind("<Button-1>")
-        gMsxmlenu_label.configure(text_color="gray")
-        gMsxmlenu_label.configure(text="MSXML4 Installed")
-        gMsxmlenu_label.configure(cursor="")
-    else:
-        debug("install_check MSXMl4 is:", "Not Installed")
-        if os.path.exists("msxmlenu.msi"):
-            gMsxmlenu_label.configure(text="Install MSXML4")
-        else:
-            gMsxmlenu_button.unbind("<Button-1>")
-            gMsxmlenu_label.unbind("<Button-1>")
-            gMsxmlenu_label.configure(text_color="gray")
-            gMsxmlenu_label.configure(text="MSXML4 Unavailable")
-            gMsxmlenu_label.configure(cursor="")
+    # Define defaults
+    defaults = {
+        "gamepath": str(os.getcwd()),
+        "lastupdate": "na",
+        "showlogs": "0",
+        "updatelastcheck": ""
+    }
 
-    if check_files(["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]):
-        debug("install_check VC++ Redistributable is:", "Installed")
-        gVCredistx86_button.unbind("<Button-1>")
-        gVCredistx86_label.unbind("<Button-1>")
-        gVCredistx86_label.configure(text_color="gray")
-        gVCredistx86_label.configure(text="VC++ Redist Installed")
-        gVCredistx86_label.configure(cursor="")
-    else:
-        debug("install_check MSXML4 is:", "Not Installed")
-        if os.path.exists("msxmlenu.msi"):
-            gVCredistx86_label.configure(text="Install VC++ Redist")
-        else:
-            gVCredistx86_button.unbind("<Button-1>")
-            gVCredistx86_label.unbind("<Button-1>")
-            gVCredistx86_label.configure(text_color="gray")
-            gVCredistx86_label.configure(text="VC Redist Unavailable")
-            gVCredistx86_label.configure(cursor="")
-
-def get_remote_file_list():
-    #print("Fetching remote file list...")
     try:
-        r = requests.get(METADATA_URL, headers=HEADERS)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        #print(f"Failed to fetch metadata: {e}")
-        debug(f"Failed to fetch metadata: {e}")
-        return []
+        if gConfigPath.is_file():
+            # Read existing config
+            read_write_config("r")
+        else:
+            # Create section if file doesn’t exist
+            gConfigUserData["USERINFO"] = {}
 
-    files = []
-    for file in data.get("files", []):
-        name = file.get("name")
-        size = int(file.get("size", 0))
+        # Ensure section exists
+        if "USERINFO" not in gConfigUserData:
+            gConfigUserData["USERINFO"] = {}
 
-        if name and name.startswith(SUBFOLDER) and size > 0:
-            relative_name = name[len(SUBFOLDER):]
-            files.append((relative_name, size))
-    return files
+        # Fill in any missing keys with defaults
+        for key, value in defaults.items():
+            if key not in gConfigUserData["USERINFO"]:
+                gConfigUserData["USERINFO"][key] = value
 
+        # Save changes
+        read_write_config("w")
+        read_write_config("r")
 
-def file_needs_update(relative_path, remote_size):
-    #print("relative_path",relative_path)
-    #print("remote_size",remote_size)
-    #print("LOCAL_COMPARE_DIR",LOCAL_COMPARE_DIR)
-    local_file = LOCAL_COMPARE_DIR / relative_path
-    if not local_file.exists():
-        #print(f"[MISSING] {relative_path}")
-        return True
-    if local_file.stat().st_size != remote_size:
-        #print(f"[UPDATED] {relative_path}")
-        return True
-    return False
+        gConfigUserInfo = gConfigUserData["USERINFO"]
+        gGamePath = gConfigUserInfo.get("gamepath", str(os.getcwd()))
+        if gGamePath == "":
+            gGamePath = str(os.getcwd())
 
+        debug("make_config Config created ", "successfully")
 
-def download_and_copy(relative_path):
-    url = f"{DOWNLOAD_BASE}/{SUBFOLDER}{relative_path}"
-    temp_path = TEMP_DOWNLOAD_DIR / relative_path
-    final_path = FINAL_TARGET_DIR / relative_path
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if gThreadStop_event.is_set():
-        return
-
-    for attempt in range(1, MAX_RETRIES + 2):  # retries + first try
-        try:
-            # Download file
-            with requests.get(url, stream=True, headers=HEADERS, allow_redirects=True) as r:
-                r.raise_for_status()
-                with open(temp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if gCancelDownload: # Check if user Cancelled the download
-                            gApp.after(0, lambda: gUpdate_label.configure(text="Download cancelled"))
-                            gThreadStop_event.set()
-                            debug("download_and_copy", "Download cancelled " + str(gCancelDownload))
-                            enable_all_widgets()
-                            break
-                        if gThreadStop_event.is_set():
-                            return
-
-                        if not gApp.winfo_exists(): # Check if the GUI is closed
-                            gThreadStop_event.set() # kill the thread
-                            enable_all_widgets()
-                            return
-
-                        if chunk:
-                            f.write(chunk)
-
-            # Copy to final directory immediately
-            shutil.copy2(temp_path, final_path)
-            #print(f"Done -> {relative_path}")
-
-
-            if gCancelDownload == False:
-                gApp.after(0, lambda: gUpdate_label.configure(text= str(len(to_download)) + " New files, Downloading... " + str(relative_path)))
-
-            # Remove temp file
-            temp_path.unlink(missing_ok=True)
-            return
-
-        except requests.exceptions.HTTPError as e:
-            if r.status_code == 401:
-                #print(f"[SKIPPED 401] {relative_path}")
-                debug(f"[SKIPPED 401] {relative_path}")
-                return
-            else:
-                debug(f"[HTTP ERROR] {relative_path} ({e}), attempt {attempt}")
-        except Exception as e:
-            debug(f"[ERROR] {relative_path} ({e}), attempt {attempt}")
-
-
-
-    #print(f"[FAILED] {relative_path} after {MAX_RETRIES + 1} attempts")
+    except PermissionError:  # File Permission Error
+        debug("make_config Permission denied", "PermissionError")
+    except OSError as e:  # OSError
+        debug(f"make_config OS error has occurred: {e}", "OSError")
+    except Exception as e:  # Exception
+        debug(f"make_config An unexpected error has occurred: {e}", "Exception")
 
 def main():
     debug("main Starting", "main()")
@@ -1234,21 +1183,10 @@ def main():
 
     make_config()
     interface()
-
-    LOCAL_COMPARE_DIR = Path(gGamePath)      # Folder to compare against
-    TEMP_DOWNLOAD_DIR = Path(os.getcwd()) / "download"       # Temp download location
-    FINAL_TARGET_DIR = Path(gGamePath)         # Where files get copied to
-    #print("LOCAL_COMPARE_DIR",LOCAL_COMPARE_DIR)
-    #print("TEMP_DOWNLOAD_DIR",TEMP_DOWNLOAD_DIR)
-    #print("FINAL_TARGET_DIR",FINAL_TARGET_DIR)
-
-    TEMP_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    FINAL_TARGET_DIR.mkdir(parents=True, exist_ok=True)
-
-    #find_download_mirror() 
-    check_updates("https://www.moddb.com/mods/improvement-mod/downloads/improvement-mod-manual-install-new")
-    #read_ai_zip()
+    
     install_check()
+    
+    read_ai_zip()
 
     today = date.today()
     if str(today) != gConfigUserInfo["updatelastcheck"]:
@@ -1294,9 +1232,11 @@ def main():
     if getattr(sys, 'frozen', False): # Close the splash screen
         pyi_splash.close()
 
+    start_update_check()
     gApp.mainloop()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    
     gDebugger: bool = False # Turn on and off the debugger
     debug("Welcome to the Improvement Mod Launcher", "Creating global vars")
     ctk.deactivate_automatic_dpi_awareness() # Disable DPI scaling
@@ -1351,7 +1291,6 @@ if __name__ == '__main__':
     gEnableLogs_checkbox:ctk.CTkCheckBox = None
     gD3D9_checkbox:ctk.CTkCheckBox = None
     gD3D9Var_intVar:ctk.IntVar = None
-    gThreadStop_event = Event()
     gDownloadThread = None
     gMain_font:ctk.CTkFont = None
     gLog_font:ctk.CTkFont = None
@@ -1362,19 +1301,26 @@ if __name__ == '__main__':
     EXECUTOR = None
     gNewUpdates = False
 
-    # ==========================
-    # CONFIG
-    # ==========================
-    ARCHIVE_ID = "aoe3-imp-mod-new"
-    SUBFOLDER = "AoE3ImpMod_New/"
+    # Capture the parent Process ID right when the script starts up
+    PARENT_PID = os.getppid()
 
-    DOWNLOAD_BASE = f"https://archive.org/download/{ARCHIVE_ID}"
-    METADATA_URL = f"https://archive.org/metadata/{ARCHIVE_ID}"
-    LOCAL_COMPARE_DIR = None
-    TEMP_DOWNLOAD_DIR = None
-    FINAL_TARGET_DIR = None
+    # SFTP connection details
+    HOST = "abyssia.fr"
+    PORT = 1417
+    USERNAME = "anonimpmod"
+    PASSWORD = "anonimpmod"
 
-    MAX_THREADS = 12
-    HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    MAX_RETRIES = 2  # Retry failed downloads this many times
+    # Remote directory to download
+    REMOTE_DIR = "/data/impmod/bin"
+    # Local target directory
+    LOCAL_DIR = Path("game")
+
+    # Thread adjustment settings
+    MAX_CRAWL_WORKERS = 4     
+    MAX_DOWNLOAD_WORKERS = 3   
+
+    # Global shutdown flag to halt all threads instantly if the main script exits
+    shutdown_event = threading.Event()
+
     main()
+
