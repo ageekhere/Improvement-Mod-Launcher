@@ -36,6 +36,12 @@ def debug(message:str, log:str) -> None: # Needs string message and string log m
     if gDebugger: # Display logs when enabled
         print(str(message), str(log)) # Print logs to console
 
+def on_app_close() -> None:
+    """Triggered when the user clicks the 'X' button. Safely kills background tasks."""
+    debug("on_app_close - Application closing. Signaling background threads to stop...", "")
+    shutdown_event.set()  # This trips all your loop checks inside the executors
+    gApp.destroy()        # Safely closes the Tkinter application window
+
 def truncate_string(input_string, max_length=100, placeholder="..."):
     if len(input_string) > max_length:
         return input_string[:max_length - len(placeholder)] + placeholder
@@ -86,12 +92,7 @@ def check_parent_status() -> bool:
     return False
 
 
-def start_update_check():
-    """Spawns the update check task inside a non-blocking daemon background thread."""
-    gApp.after(0, lambda: gUpdate_label.configure(text="Checking For Updates"))
-    check_thread = threading.Thread(target=check_for_update_process, daemon=True)
-    check_thread.start()
-    debug("check_parent_status - Update check task spawned successfully in a separate thread", "")
+
 
 def install_check():
     global gInterface_canvas
@@ -397,16 +398,17 @@ def download_mirror_process():
 
     try:
         debug(f"download_mirror_process - Connecting to {HOST}:{PORT}...", "")
-
+        gApp.after(0, lambda: gUpdate_label.configure(text="Connecting to Update Server..."))
         transport = paramiko.Transport((HOST, PORT))
         
         transport.window_size = 2147483647  
         transport.packet_size = 32768       
         
         transport.connect(username=USERNAME, password=PASSWORD)
-        gApp.after(0, lambda: gUpdate_label.configure(text="Connecting to Update Server..."))
+        
         debug(f"download_mirror_process - Connected successfully. [1/2] Speed-scanning remote directories in parallel...", "")
 
+        gApp.after(0, lambda: gUpdate_label.configure(text="Server Connected! Checking files..."))
         # --- [1/2] MULTI-THREADED SCANNING PHASE ---
         with ThreadPoolExecutor(max_workers=MAX_CRAWL_WORKERS) as crawl_executor:
             
@@ -560,6 +562,7 @@ def start_mirror_download():
 
 def download_update() -> None:
     global LOCAL_DIR
+
     try:
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         start_mirror_download()
@@ -578,6 +581,7 @@ def startGame_button_click() -> None:
         add_log("Cannot start game")
     else:
         debug("startGame_button_click","Stop thread")
+        shutdown_event.set() # <-- Add this to alert thread executors before exiting
         sys.exit()
 
 def get_zip_top_level_folder_names(zip_file_path) -> set:
@@ -879,7 +883,6 @@ def check_for_update_process():
     files_to_download.clear() 
 
     try:
-        #print(f"Connecting to {HOST}:{PORT} to check for updates...")
         gApp.after(0, lambda: gUpdate_label.configure(text="Connecting To The Server..."))
         transport = paramiko.Transport((HOST, PORT))
         
@@ -895,7 +898,8 @@ def check_for_update_process():
                 nonlocal active_tasks_count
 
                 try:
-                    if shutdown_event.is_set():
+                    # Early exit if app closing or an update was already detected by another thread
+                    if shutdown_event.is_set() or files_to_download:
                         return
 
                     local_sftp = None
@@ -910,31 +914,33 @@ def check_for_update_process():
                         if local_sftp:
                             local_sftp.close()
 
-                    discovered_files = []
                     for item in items:
-                        gApp.after(0, lambda: gUpdate_label.configure(text="Checking Files - " + str(item.filename)))
-                        if shutdown_event.is_set():
+                        # Check again inside the loop to abort scanning immediately
+                        if shutdown_event.is_set() or files_to_download:
                             return
-                            
+
+                        gApp.after(0, lambda: gUpdate_label.configure(text="Checking Files - " + str(item.filename)))
+                        
                         remote_path = f"{folder_path}/{item.filename}".replace("//", "/")
                         if stat.S_ISDIR(item.st_mode):
                             with list_lock:
-                                active_tasks_count += 1
-                            crawl_executor.submit(worker_scan_folder, remote_path)
+                                # Only submit new folders if we haven't found an update yet
+                                if not files_to_download and not shutdown_event.is_set():
+                                    active_tasks_count += 1
+                                    crawl_executor.submit(worker_scan_folder, remote_path)
                         else:
                             relative_path = remote_path.replace(REMOTE_DIR, "", 1).lstrip("/")
                             local_file_path = LOCAL_DIR / relative_path
                             if file_needs_update(local_file_path, item.st_size):
-                                discovered_files.append((remote_path, relative_path, int(item.st_mtime)))
-
-                    if discovered_files and not shutdown_event.is_set():
-                        with list_lock:
-                            files_to_download.extend(discovered_files)
+                                with list_lock:
+                                    files_to_download.append((remote_path, relative_path, int(item.st_mtime)))
+                                    tasks_done_event.set() # Instantly wake up the main loop
+                                return # Exit this worker thread immediately
 
                 finally:
                     with list_lock:
                         active_tasks_count -= 1
-                        if active_tasks_count == 0 or shutdown_event.is_set():
+                        if active_tasks_count == 0 or shutdown_event.is_set() or files_to_download:
                             tasks_done_event.set()
 
             active_tasks_count = 1
@@ -946,6 +952,7 @@ def check_for_update_process():
                 if shutdown_event.is_set():
                     return
 
+        # Once out of the ThreadPoolExecutor context block, all threads have gracefully drained
         if len(files_to_download) > 0:
             #print(f"\n[Info] {len(files_to_download)} updates found.")
             gApp.after(0, lambda: gUpdate_label.configure(text="New Updates Found"))
@@ -968,6 +975,12 @@ def check_for_update_process():
     finally:
         if transport:
             transport.close()
+def start_update_check():
+    """Spawns the update check task inside a non-blocking daemon background thread."""
+    gApp.after(0, lambda: gUpdate_label.configure(text="Checking For Updates"))
+    check_thread = threading.Thread(target=check_for_update_process, daemon=True)
+    check_thread.start()
+    debug("check_parent_status - Update check task spawned successfully in a separate thread", "")
 
 def create_button(new_button,new_label,tooltip,xpos,ypos,labeltext,function_name) -> None:
     button_width = 250
@@ -1152,6 +1165,7 @@ def main():
     global LOCAL_COMPARE_DIR 
     global TEMP_DOWNLOAD_DIR 
     global FINAL_TARGET_DIR
+    global LOCAL_DIR
 
     gAppWidth = 1130 
     gAppHeight = 720
@@ -1179,6 +1193,8 @@ def main():
     mainWindowX = (gApp.winfo_screenwidth() - gAppWidth) // 2 # Use to center the app windows along X
     mainWindowY = (gApp.winfo_screenheight() - gAppHeight) // 6 # Use to center the app windows along Y
     gApp.geometry(f"{gAppWidth}x{gAppHeight}+{mainWindowX}+{mainWindowY}") # Set the app geometry so that it is centered 
+
+    gApp.protocol("WM_DELETE_WINDOW", on_app_close)
     # Run start up functions
 
     make_config()
@@ -1233,10 +1249,10 @@ def main():
         pyi_splash.close()
 
     start_update_check()
+    LOCAL_DIR = Path(gGamePath)
     gApp.mainloop()
 
 if __name__ == "__main__":
-    
     gDebugger: bool = False # Turn on and off the debugger
     debug("Welcome to the Improvement Mod Launcher", "Creating global vars")
     ctk.deactivate_automatic_dpi_awareness() # Disable DPI scaling
@@ -1313,14 +1329,21 @@ if __name__ == "__main__":
     # Remote directory to download
     REMOTE_DIR = "/data/impmod/bin"
     # Local target directory
-    LOCAL_DIR = Path("game")
 
+    if getattr(sys, 'frozen', False):
+        # Running as a compiled EXE
+        current_dir = Path(sys.executable).parent
+    else:
+        # Running as a normal Python script
+        current_dir = Path(__file__).parent
+
+    LOCAL_DIR = Path(current_dir)
     # Thread adjustment settings
     MAX_CRAWL_WORKERS = 4     
-    MAX_DOWNLOAD_WORKERS = 3   
+    MAX_DOWNLOAD_WORKERS = 3 
+ 
 
     # Global shutdown flag to halt all threads instantly if the main script exits
     shutdown_event = threading.Event()
 
     main()
-
