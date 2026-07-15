@@ -92,7 +92,12 @@ def check_parent_status() -> bool:
     return False
 
 
-
+def start_update_check():
+    """Spawns the update check task inside a non-blocking daemon background thread."""
+    gApp.after(0, lambda: gUpdate_label.configure(text="Checking For Updates"))
+    check_thread = threading.Thread(target=check_for_update_process, daemon=True)
+    check_thread.start()
+    debug("check_parent_status - Update check task spawned successfully in a separate thread", "")
 
 def install_check():
     global gInterface_canvas
@@ -398,14 +403,14 @@ def download_mirror_process():
 
     try:
         debug(f"download_mirror_process - Connecting to {HOST}:{PORT}...", "")
-        gApp.after(0, lambda: gUpdate_label.configure(text="Connecting to Update Server..."))
+        
         transport = paramiko.Transport((HOST, PORT))
         
         transport.window_size = 2147483647  
         transport.packet_size = 32768       
         
         transport.connect(username=USERNAME, password=PASSWORD)
-        
+        gApp.after(0, lambda: gUpdate_label.configure(text="Connecting to Update Server..."))
         debug(f"download_mirror_process - Connected successfully. [1/2] Speed-scanning remote directories in parallel...", "")
 
         gApp.after(0, lambda: gUpdate_label.configure(text="Server Connected! Checking files..."))
@@ -625,7 +630,13 @@ def extract_ai_from_zip(folder_name: str) -> None:
     :param folder_name: The folder inside the zip to extract (relative path inside zip)
     """
     debug("extract_ai_from_zip", "Starting extraction...")
-    output_dir: str = os.path.join(gGamePath, "AIM")
+    output_dir = gGamePath
+
+    folder = Path(gGamePath) / "AIM"
+
+    if folder.is_dir():
+        shutil.rmtree(folder)
+
     zip_path: str = os.path.join(gGamePath, "ImpMod_AIs.zip") # Ensure .zip is included if not inferred
     os.makedirs(output_dir, exist_ok=True) # Create the output directory if it doesn't exist
     try:
@@ -725,16 +736,15 @@ def read_ai_zip() -> None:
         add_log("No folders found in ImpMod_AIs")
         return
     if not os.path.exists(os.path.join(gGamePath, "ImpMod_AISetting")):
-        gAiDropDown.configure(state="disabled")
         add_log("Missing ImpMod_AISetting")
         return
     if not os.path.exists(os.path.join(gGamePath, "ImpMod_AIs.zip")):
         gAiDropDown.configure(state="disabled")
         add_log("Missing ImpMod_AIs.zip")
         return
-    if not os.path.exists(os.path.join(gGamePath, "AIM")):
+    if not os.path.exists(os.path.join(gGamePath, "ImpMod_AIs.zip")):
         gAiDropDown.configure(state="disabled")
-        add_log("Missing AIM folder")
+        add_log("Missing ImpMod_AIs.zip")
         return
     debug("read_ai_zip load ai ", str(gSelectedAI))
     try:
@@ -975,12 +985,7 @@ def check_for_update_process():
     finally:
         if transport:
             transport.close()
-def start_update_check():
-    """Spawns the update check task inside a non-blocking daemon background thread."""
-    gApp.after(0, lambda: gUpdate_label.configure(text="Checking For Updates"))
-    check_thread = threading.Thread(target=check_for_update_process, daemon=True)
-    check_thread.start()
-    debug("check_parent_status - Update check task spawned successfully in a separate thread", "")
+
 
 def create_button(new_button,new_label,tooltip,xpos,ypos,labeltext,function_name) -> None:
     button_width = 250
@@ -1265,8 +1270,8 @@ if __name__ == "__main__":
     else: # Running as a script 
         gApp.iconbitmap(r"icon\icon.ico") # Set the path to the icon file for script
 
-    gVersion:str = "1.04" # App version
-    gGitHubVersion:str = "version1.04"
+    gVersion:str = "1.05" # App version
+    gGitHubVersion:str = "version1.05"
 
     gModDownloadUrl:str = "" # Hold the URL for the mirror download
     gLast_updated:str = "" # Stores the last date the file was installed
