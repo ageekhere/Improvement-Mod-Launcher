@@ -31,6 +31,7 @@ from email.utils import parsedate_to_datetime
 import requests
 import platform
 import ctypes
+import socket
 
 def debug(message:str, log:str) -> None: # Needs string message and string log message, does not return anything
     if gDebugger: # Display logs when enabled
@@ -98,6 +99,8 @@ def start_update_check():
     check_thread = threading.Thread(target=check_for_update_process, daemon=True)
     check_thread.start()
     debug("check_parent_status - Update check task spawned successfully in a separate thread", "")
+
+
 
 def install_check():
     global gInterface_canvas
@@ -366,8 +369,6 @@ def disable_all_widgets() -> None: # Disable widgets
         if isinstance(widget, ctk.CTkLabel) and widget.cget("text_color") == "white": # Check if the widget is a Label
             widget.configure(text_color="#636363") # Change the text color to gray
 
-
-
 def file_needs_update(local_path: Path, remote_size: int) -> bool:
     """
     Compares the local file strictly by size.
@@ -577,7 +578,7 @@ def download_update() -> None:
         shutdown_event.set()
         sys.exit(0)
 
-
+"""
 def startGame_button_click() -> None:
     debug("startGame_button_click","Starting game")
     ret = windll.shell32.ShellExecuteW(None, "runas", os.path.join(gGamePath, "age3m.exe"), "arg1", None, 1)
@@ -587,6 +588,67 @@ def startGame_button_click() -> None:
     else:
         debug("startGame_button_click","Stop thread")
         shutdown_event.set() # <-- Add this to alert thread executors before exiting
+        sys.exit()
+"""
+def ip_option_changed(choice):
+    global gSelectedIPaddress
+    gSelectedIPaddress = choice
+
+def get_local_ipv4_addresses():
+    """
+    Returns a list of all non-loopback IPv4 addresses.
+    """
+    global gIPaddresses
+    gIPaddresses = []
+
+    hostname = socket.gethostname()
+
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in gIPaddresses and not ip.startswith("127."):
+                gIPaddresses.append(ip)
+    except socket.gaierror:
+        pass
+
+    return gIPaddresses
+
+def startGame_button_click() -> None:
+    debug("startGame_button_click", "Starting game")
+
+    if gSelectedIPaddress == None:
+        debug("startGame_button_click","Starting game")
+        ret = windll.shell32.ShellExecuteW(None, "runas", os.path.join(gGamePath, "age3m.exe"), "arg1", None, 1)
+        if ret <= 32: # ShellExecuteW returns a value greater than 32 if successful.
+            debug("startGame_button_click Failed to launch the executable with elevation",str(ret))
+            add_log("Cannot start game")
+        else:
+            debug("startGame_button_click","Stop thread")
+            shutdown_event.set() # <-- Add this to alert thread executors before exiting
+            sys.exit()
+        return
+
+    override_ip = gSelectedIPaddress
+
+    debug("startGame_button_click", f"Using OverrideAddress={override_ip}")
+
+    args = f'OverrideAddress="{override_ip}" OverridePort="{gOverride_port}"'
+
+    ret = windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        os.path.join(gGamePath, "age3m.exe"),
+        args,
+        None,
+        1
+    )
+
+    if ret <= 32:
+        debug("startGame_button_click Failed to launch the executable with elevation", str(ret))
+        add_log("Cannot start game")
+    else:
+        debug("startGame_button_click", "Stop thread")
+        shutdown_event.set()
         sys.exit()
 
 def get_zip_top_level_folder_names(zip_file_path) -> set:
@@ -1101,6 +1163,70 @@ def interface():
     if not os.path.exists(file_path):
         add_log("Run age3y.exe first before running the mod")
 
+    # Determine the path for the button image
+    if getattr(sys, 'frozen', False): # Running as a PyInstaller bundle
+        button_image_path = os.path.join(sys._MEIPASS, "button.png")
+    else: # Running as a script
+        button_image_path = gButtonImageUrl
+    try:
+        button_image = Image.open(button_image_path)
+    except FileNotFoundError as e:
+        add_log("Cannot read AI file " + str(e))
+        sys.exit(1)
+
+
+    dropButton = ctk.CTkLabel(gApp, image=ctk.CTkImage(light_image=button_image, size=(250, 40)), text="", font=gMain_font) # Create the CTkLabel with the background image
+    gInterface_canvas.create_window(gAppWidth - 270, gAppHeight - 130, window=dropButton, anchor="w") # Add the label to the canvas
+    gIPDropDown = ctk.CTkOptionMenu( # Create the OptionMenu with the same background color
+        master=gApp,
+        values=gIPaddresses,
+        fg_color="#600000", # Match red background color
+        button_color="#800000",
+        button_hover_color = "#900000",
+        dropdown_fg_color="#600000",
+        dropdown_text_color="white",
+        corner_radius = 0,
+        command=ip_option_changed,
+        width=230,
+        height=30,
+        dynamic_resizing=True)
+    gInterface_canvas.create_window(gAppWidth - 260, gAppHeight - 130, window=gIPDropDown,anchor="w")
+    gIPDropDown.set("Select IP Address")
+    CreateToolTip(gIPDropDown, "Select an IP Address to play Mulitplayer using clients like Radmin VPN")
+
+    def validate_port(value):
+        global gOverride_port
+
+        if value == "":
+            gOverride_port = 2300
+            return True
+
+        if value.isdigit():
+            port = int(value)
+
+            if 1 <= port <= 65535:
+                gOverride_port = port
+                return True
+
+        return False
+
+    portInput = ctk.CTkLabel(gApp, image=ctk.CTkImage(light_image=button_image, size=(250, 40)), text="", font=gMain_font) # Create the CTkLabel with the background image
+    gInterface_canvas.create_window(gAppWidth - 270, gAppHeight - 60, window=portInput, anchor="w") # Add the label to the canvas
+
+    vcmd = (gInterface_canvas.register(validate_port), "%P")
+    port_entry = ctk.CTkEntry(
+        master=gApp,
+        placeholder_text="2300",
+        validate="key",
+        validatecommand=vcmd,
+        width=230,
+        height=30,
+        fg_color="#600000",
+        border_color="#600000"
+    )
+    gInterface_canvas.create_window(gAppWidth - 265, gAppHeight - 60, window=port_entry,anchor="w")
+    CreateToolTip(port_entry, "Select a Port to play Mulitplayer using clients like Radmin VPN")
+
 def make_config() -> None:  # Make a user config file to save preferences
     debug("make_config Creating", "config")
     global gConfigPath
@@ -1154,6 +1280,8 @@ def make_config() -> None:  # Make a user config file to save preferences
     except Exception as e:  # Exception
         debug(f"make_config An unexpected error has occurred: {e}", "Exception")
 
+
+
 def main():
     debug("main Starting", "main()")
     ctk.set_appearance_mode("dark") # Set to use appearance mode for light and dark themes
@@ -1203,10 +1331,9 @@ def main():
     # Run start up functions
 
     make_config()
+    get_local_ipv4_addresses()
     interface()
-    
     install_check()
-    
     read_ai_zip()
 
     today = date.today()
@@ -1277,6 +1404,7 @@ if __name__ == "__main__":
     gLast_updated:str = "" # Stores the last date the file was installed
     gSelectedAI:str = "" # Currently selected AI to use
     gAiDropDown:ctk.CTkOptionMenu = None # Drop down menu for selecting an ai
+    gIPDropDown:ctk.CTkOptionMenu = None # Drop down menu for selecting you IP
     gGamePath:str = "" # stores the current game path
     gCancelDownload:bool = False # Cancel download flag
     gLogMessages:list = []
@@ -1321,6 +1449,9 @@ if __name__ == "__main__":
     to_download = None
     EXECUTOR = None
     gNewUpdates = False
+    gIPaddresses:list = None
+    gSelectedIPaddress = None
+    gOverride_port = 2300
 
     # Capture the parent Process ID right when the script starts up
     PARENT_PID = os.getppid()
@@ -1346,9 +1477,11 @@ if __name__ == "__main__":
     # Thread adjustment settings
     MAX_CRAWL_WORKERS = 4     
     MAX_DOWNLOAD_WORKERS = 3 
+
  
 
     # Global shutdown flag to halt all threads instantly if the main script exits
     shutdown_event = threading.Event()
 
     main()
+
