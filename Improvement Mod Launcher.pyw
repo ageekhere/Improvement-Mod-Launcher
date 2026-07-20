@@ -685,7 +685,71 @@ def update_file(file_text:str,file_path:str) -> None:
         debug(f"update_file An unexpected error has occurred: {e}", "Exception when writing to ImpMod_AISetting")
         add_log("Cannot update ImpMod_AISetting " + str(e))
 
+
+
 def extract_ai_from_zip(folder_name: str) -> None:
+    """
+    Extracts AI files, intelligently handling whether the zip includes 
+    an 'AIM' directory or just raw files.
+    """
+    debug("extract_ai_from_zip", "Starting extraction...")
+    output_dir = Path(gGamePath)
+    zip_path = output_dir / "ImpMod_AIs.zip"
+    aim_target_dir = output_dir / "AIM"
+
+    # 1. Clean start: Remove the existing AIM directory
+    if aim_target_dir.exists():
+        try:
+            shutil.rmtree(aim_target_dir)
+        except Exception as e:
+            add_log(f"Failed to clear old AI folder: {e}")
+            return
+
+    try:
+        with ZipFile(zip_path, 'r') as zf:
+            # 2. Identify the base directory (e.g., '1_Improved_AI_v3_01')
+            all_files = zf.namelist()
+            base_prefix = next((name.split('/')[0] for name in all_files if name.startswith(folder_name + '/')), None)
+            
+            if not base_prefix:
+                raise FileNotFoundError(f"Could not find folder {folder_name} in zip.")
+
+            # 3. Process files
+            for member in zf.infolist():
+                if not member.filename.startswith(base_prefix + '/'):
+                    continue
+
+                # Remove the version folder prefix to get the internal path
+                # e.g., '1_Improved_AI_v3_01/AIM/file.ai' -> 'AIM/file.ai'
+                relative_path = os.path.relpath(member.filename, base_prefix)
+
+                # Ignore the base folder itself
+                if relative_path == ".":
+                    continue
+
+                # LOGIC FIX:
+                # If the zip internal path starts with 'AIM/', 
+                # we map it directly to output_dir (so AIM/file.ai -> gGamePath/AIM/file.ai)
+                # If the zip path DOES NOT start with 'AIM/', 
+                # we map it to aim_target_dir (so file.ai -> gGamePath/AIM/file.ai)
+                if relative_path.lower().startswith("aim"):
+                    target_path = output_dir / relative_path
+                else:
+                    target_path = aim_target_dir / relative_path
+
+                # Create directories and extract
+                if member.is_dir():
+                    os.makedirs(target_path, exist_ok=True)
+                else:
+                    os.makedirs(target_path.parent, exist_ok=True)
+                    with zf.open(member) as source, open(target_path, 'wb') as target:
+                        target.write(source.read())
+
+        debug("extract_ai_from_zip", "Extraction complete.")
+    except Exception as e:
+        debug("extract_ai_from_zip", f"Error: {e}")
+        add_log("Cannot change AI: " + str(e))
+def extract_ai_from_zipold(folder_name: str) -> None:
     """
     Extracts all files from a specified folder inside the zip file
     and places them into the output directory, replacing existing files
@@ -1397,8 +1461,8 @@ if __name__ == "__main__":
     else: # Running as a script 
         gApp.iconbitmap(r"icon\icon.ico") # Set the path to the icon file for script
 
-    gVersion:str = "1.05" # App version
-    gGitHubVersion:str = "version1.05"
+    gVersion:str = "1.06" # App version
+    gGitHubVersion:str = "version1.06"
 
     gModDownloadUrl:str = "" # Hold the URL for the mirror download
     gLast_updated:str = "" # Stores the last date the file was installed
